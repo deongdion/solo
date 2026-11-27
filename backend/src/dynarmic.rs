@@ -74,9 +74,18 @@ impl Dynarmic {
             return Err(Error::Backend("dyn_new failed".into()));
         }
         let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, events };
-        cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX)?;
+        if arch == Arch::Arm32 {
+            // SAFETY: valid handle; user mode, ARM state.
+            unsafe { sys::dyn_set_reg(cpu.cpu.0, 16, 0x10) };
+        }
+        cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
         Ok(cpu)
+    }
+
+    fn cpsr(&self) -> u64 {
+        // SAFETY: valid handle; 16 is CPSR.
+        unsafe { sys::dyn_reg(self.cpu.0, 16) }
     }
 
     fn index(&self, reg: Reg) -> u32 {
@@ -85,7 +94,7 @@ impl Dynarmic {
             (Arch::Arm64, Reg::Lr) => 30,
             (Arch::Arm64, Reg::Sp) => 31,
             (Arch::Arm64, Reg::Pc) => 32,
-            (Arch::Arm64, Reg::Tls) => 35,
+            (Arch::Arm64, Reg::Tls) => 34,
             (Arch::Arm32, Reg::General(n)) => n as u32,
             (Arch::Arm32, Reg::Sp) => 13,
             (Arch::Arm32, Reg::Lr) => 14,
@@ -111,26 +120,54 @@ impl Cpu for Dynarmic {
         unsafe { sys::dyn_set_reg(self.cpu.0, index, value) }
     }
 
-    fn memory(&mut self) -> &mut Memory {
+    fn memory(&self) -> &Memory {
+        &self.memory
+    }
+
+    fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
     }
 
-    fn map(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error> {
-        self.memory.map(address, length, perms)?;
+    // dynarmic reads guest memory through the page table only, so permissions are bookkeeping here
+    // (the same as unidbg's dynarmic backend).
+    fn map(&mut self, address: u64, length: u64, perms: Perms, label: &str) -> Result<(), Error> {
+        self.memory.map(address, length, perms, label)?;
         Ok(())
     }
 
-    fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error> {
+    fn unmap(&mut self, address: u64, length: u64) -> Result<(), Error> {
+        self.memory.unmap(address, length)?;
+        self.invalidate(address, length);
+        Ok(())
+    }
+
+    fn protect(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error> {
+        self.memory.protect(address, length, perms)?;
+        Ok(())
+    }
+
+    fn set_pc(&mut self, pc: u64) {
         match self.arch {
             Arch::Arm64 => self.set_reg(Reg::Pc, pc),
             Arch::Arm32 => {
-                // User mode; T bit from the low address bit.
-                let cpsr = if pc & 1 != 0 { 0x30 } else { 0x10 };
+                // Keep the mode and flags; the T bit follows the low address bit.
+                let cpsr = self.cpsr();
+                let cpsr = if pc & 1 != 0 { cpsr | 0x20 } else { cpsr & !0x20 };
                 // SAFETY: valid handle; 16 is CPSR.
                 unsafe { sys::dyn_set_reg(self.cpu.0, 16, cpsr) };
                 self.set_reg(Reg::Pc, pc & !1);
             }
         }
+    }
+
+    fn pc(&self) -> u64 {
+        match self.arch {
+            Arch::Arm64 => self.reg(Reg::Pc),
+            Arch::Arm32 => self.reg(Reg::Pc) | ((self.cpsr() >> 5) & 1),
+        }
+    }
+
+    fn resume(&mut self, budget: u64) -> Result<Stop, Error> {
         self.events.stop = None;
         let mut executed = 0u64;
         // SAFETY: valid handle; hooks point at self.events which is boxed and alive.

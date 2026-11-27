@@ -14,3 +14,6 @@ javavm.workspace = true
 java.workspace = true
 device.workspace = true
 inspect.workspace = true
+
+[features]
+unicorn = ["backend/unicorn"]

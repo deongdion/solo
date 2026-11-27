@@ -107,6 +107,20 @@ No `cli` or `dex` crate: both already exist in redex.
 | M5 | Merge into redex | |
 | M6 | Dex bytecode execution (F10) | Plugin dex loaded from memory drives the native calls with no hand-written orchestration |
 
+
+### M1 progress
+
+Done (tests in `runtime/tests/libc.rs`, both architectures, dynarmic):
+- Linker: ELF32/64 parse, placement from `MMAP_BASE`, REL/RELA/RELR, GNU and SysV hash lookup, DT_SYMBOLIC, BFS local group, init order (dependencies first, init_array read after relocation), missing libraries and unresolved symbols recorded instead of failing.
+- Kernel: syscall tables for arm64 and ARM EABI, rootfs VFS that cannot escape the root, overlay writes, `/proc/self/{maps,cmdline,status}`, file trace (F5), `*at` path resolver with AT_EMPTY_PATH (F12), unhandled syscall counts.
+- Runtime: unidbg memory layout, TLS slots and KernelArgumentBlock for `__libc_preinit`, host stubs (`svc #0x100+n`) for libdl, reporting stubs for unresolved symbols, crash report with module+offset (F4), end-of-run summary (F7) with the dlopen timeline (F8).
+- Host memory limit per address space (default 4 GiB): a guest that maps too much gets an error instead of exhausting the host.
+- Sdk23 bionic libc init runs; malloc, strlen, sprintf, puts, fflush and getpid return the expected values.
+
+Fixed while bringing libc up: arm64 TLS is TPIDR_EL0 (was TPIDRRO_EL0); dynarmic needs an exclusive monitor (LDXR/STXR) and a CP15 coprocessor (TPIDRURO on A32); allocations are keyed by host address, because a partly unmapped range can be remapped at the start of its old allocation.
+
+Next: byte-equal comparison with unidbg on fixtures, memory magic scan (F6), non-interactive failure dump (F3), libtmessages load and init.
+
 ## Build
 
 The dynarmic backend needs Boost headers: set `DYNARMIC_BOOST_INCLUDE` to a Boost source tree (the directory that contains `boost/`). The dynarmic fork is a git submodule (`git submodule update --init --recursive`).

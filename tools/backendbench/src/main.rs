@@ -68,12 +68,12 @@ fn create(backend: &str, arch: Arch, code_cache_mib: u64) -> Box<dyn Cpu> {
         Arch::Arm64 => ARM64_BIN,
         Arch::Arm32 => THUMB_BIN,
     };
-    cpu.map(CODE, 0x1000 * ((image.len() as u64).div_ceil(0x1000)), Perms::RX).unwrap();
-    cpu.memory().write(CODE, image).unwrap();
-    cpu.map(STACK, STACK_SIZE, Perms::RW).unwrap();
-    cpu.map(DATA, DATA_SIZE, Perms::RW).unwrap();
+    cpu.map(CODE, 0x1000 * ((image.len() as u64).div_ceil(0x1000)), Perms::RX, "code").unwrap();
+    cpu.memory_mut().write(CODE, image).unwrap();
+    cpu.map(STACK, STACK_SIZE, Perms::RW, "stack").unwrap();
+    cpu.map(DATA, DATA_SIZE, Perms::RW, "data").unwrap();
     let words: Vec<u8> = (0..WORDS as u32).flat_map(|i| i.wrapping_mul(2654435761).to_le_bytes()).collect();
-    cpu.memory().write(DATA, &words).unwrap();
+    cpu.memory_mut().write(DATA, &words).unwrap();
     cpu.set_reg(backend::Reg::Sp, STACK + STACK_SIZE - 0x100);
     cpu
 }

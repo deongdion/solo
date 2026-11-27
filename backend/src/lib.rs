@@ -77,15 +77,30 @@ pub trait Cpu {
     fn arch(&self) -> Arch;
     fn reg(&self, reg: Reg) -> u64;
     fn set_reg(&mut self, reg: Reg, value: u64);
-    fn memory(&mut self) -> &mut Memory;
-    /// Maps a range in memory and makes it visible to the backend.
-    fn map(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error>;
-    /// Runs from `pc` until a stop condition or until `budget` instructions have executed.
-    fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error>;
+    fn memory(&self) -> &Memory;
+    fn memory_mut(&mut self) -> &mut Memory;
+    /// Maps a zero-filled range and makes it visible to the backend.
+    fn map(&mut self, address: u64, length: u64, perms: Perms, label: &str) -> Result<(), Error>;
+    /// Unmaps every mapped page in a range.
+    fn unmap(&mut self, address: u64, length: u64) -> Result<(), Error>;
+    fn protect(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error>;
+    /// Sets the next instruction. On A32 the low bit selects Thumb.
+    fn set_pc(&mut self, pc: u64);
+    /// Current instruction address; on A32 the low bit is set in Thumb state.
+    fn pc(&self) -> u64;
+    /// Continues from the current state until a stop condition or until `budget` instructions ran.
+    fn resume(&mut self, budget: u64) -> Result<Stop, Error>;
     /// Discards translated code for a range after the guest code there was rewritten.
     fn invalidate(&mut self, address: u64, length: u64);
 
+    /// Runs from `pc`.
+    fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error> {
+        self.set_pc(pc);
+        self.resume(budget)
+    }
+
     /// Calls a guest function with integer arguments and returns the first result register.
+    /// Only usable for code that makes no supervisor calls; the runtime drives everything else.
     fn call(&mut self, function: u64, args: &[u64], budget: u64) -> Result<(Stop, u64), Error> {
         let stack = self.reg(Reg::Sp);
         for (i, value) in args.iter().enumerate() {

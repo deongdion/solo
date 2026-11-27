@@ -8,8 +8,10 @@
 
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/A32/config.h>
+#include <dynarmic/interface/A32/coprocessor.h>
 #include <dynarmic/interface/A64/a64.h>
 #include <dynarmic/interface/A64/config.h>
+#include <dynarmic/interface/exclusive_monitor.h>
 
 namespace {
 
@@ -154,15 +156,51 @@ struct Callbacks32 final : Dynarmic::A32::UserCallbacks, Common<uint32_t> {
     uint64_t GetTicksRemaining() override { return budget; }
 };
 
+/// CP15 as user mode sees it: the thread ID registers and the legacy barrier operations.
+class Cp15 final : public Dynarmic::A32::Coprocessor {
+public:
+    std::uint32_t tpidruro = 0;
+    std::uint32_t tpidrurw = 0;
+
+    using Reg = Dynarmic::A32::CoprocReg;
+
+    std::optional<Callback> CompileInternalOperation(bool, unsigned, Reg, Reg, Reg, unsigned) override { return std::nullopt; }
+
+    CallbackOrAccessOneWord CompileSendOneWord(bool two, unsigned opc1, Reg CRn, Reg CRm, unsigned opc2) override {
+        if (two || opc1 != 0) return std::monostate{};
+        if (CRn == Reg::C13 && CRm == Reg::C0 && opc2 == 2) return &tpidrurw;
+        // c7: CP15ISB (c5, 4), CP15DSB (c10, 4), CP15DMB (c10, 5). A single guest thread needs no barrier.
+        if (CRn == Reg::C7 && ((CRm == Reg::C5 && opc2 == 4) || (CRm == Reg::C10 && (opc2 == 4 || opc2 == 5)))) {
+            return Callback{[](void*, std::uint32_t, std::uint32_t) -> std::uint64_t { return 0; }, std::nullopt};
+        }
+        return std::monostate{};
+    }
+
+    CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned, Reg) override { return std::monostate{}; }
+
+    CallbackOrAccessOneWord CompileGetOneWord(bool two, unsigned opc1, Reg CRn, Reg CRm, unsigned opc2) override {
+        if (two || opc1 != 0 || CRn != Reg::C13 || CRm != Reg::C0) return std::monostate{};
+        if (opc2 == 3) return &tpidruro;
+        if (opc2 == 2) return &tpidrurw;
+        return std::monostate{};
+    }
+
+    CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned, Reg) override { return std::monostate{}; }
+    std::optional<Callback> CompileLoadWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return std::nullopt; }
+    std::optional<Callback> CompileStoreWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return std::nullopt; }
+};
+
 }  // namespace
 
 struct DynCpu {
     bool is64;
+    // One guest thread per JIT: a private monitor. Declared before the JITs so it outlives them.
+    Dynarmic::ExclusiveMonitor monitor{1};
     std::unique_ptr<Callbacks64> cb64;
     std::unique_ptr<Dynarmic::A64::Jit> jit64;
     std::unique_ptr<Callbacks32> cb32;
     std::unique_ptr<Dynarmic::A32::Jit> jit32;
-    uint32_t tpidruro = 0;
+    std::shared_ptr<Cp15> cp15 = std::make_shared<Cp15>();
 };
 
 static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits, uint64_t code_cache_size,
@@ -176,6 +214,7 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         cb->hooks = *hooks;
         Dynarmic::A64::UserConfig config;
         config.callbacks = cb.get();
+        config.global_monitor = &cpu->monitor;
         config.tpidr_el0 = &cb->tpidr_el0;
         config.tpidrro_el0 = &cb->tpidrro_el0;
         config.page_table = reinterpret_cast<void**>(page_table);
@@ -199,6 +238,7 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         cb->hooks = *hooks;
         Dynarmic::A32::UserConfig config;
         config.callbacks = cb.get();
+        config.global_monitor = &cpu->monitor;
         config.page_table =
             reinterpret_cast<std::array<uint8_t*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>*>(page_table);
         config.absolute_offset_page_table = false;
@@ -207,6 +247,7 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         config.define_unpredictable_behaviour = true;
         config.enable_cycle_counting = true;
         config.always_little_endian = true;
+        config.coprocessors[15] = cpu->cp15;
         if (code_cache_size != 0) config.code_cache_size = code_cache_size;
         cpu->jit32 = std::make_unique<Dynarmic::A32::Jit>(config);
         cb->cpu = cpu->jit32.get();
@@ -284,7 +325,7 @@ uint64_t dyn_reg(const DynCpu* cpu, uint32_t index) {
     switch (index) {
         case 16: return j.Cpsr();
         case 17: return j.Fpscr();
-        case 18: return cpu->tpidruro;
+        case 18: return cpu->cp15->tpidruro;
     }
     return 0;
 }
@@ -307,7 +348,7 @@ void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value) {
     switch (index) {
         case 16: j.SetCpsr(static_cast<uint32_t>(value)); break;
         case 17: j.SetFpscr(static_cast<uint32_t>(value)); break;
-        case 18: cpu->tpidruro = static_cast<uint32_t>(value); break;
+        case 18: cpu->cp15->tpidruro = static_cast<uint32_t>(value); break;
     }
 }
 

@@ -179,7 +179,7 @@ dependencies = [
 name = "kernel"
 version = "0.0.1"
 dependencies = [
- "linker",
+ "backend",
  "machine",
  "thiserror",
 ]
@@ -204,6 +204,7 @@ dependencies = [
 name = "linker"
 version = "0.0.1"
 dependencies = [
+ "backend",
  "machine",
  "thiserror",
 ]
