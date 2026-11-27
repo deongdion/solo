@@ -128,6 +128,19 @@ fn run(arch: Arch) {
     let inode = libc_line.split_whitespace().nth(4).unwrap();
     assert_ne!(inode, "0", "zero inode is a tell: {libc_line}");
 
+    // Every real process has a [vdso] page; arm32 also has the [vectors] page. Their absence is a
+    // tell. The [vdso] line is backed by a readable page that begins with an ELF header.
+    assert!(maps.lines().any(|l| l.ends_with("[vdso]")), "no [vdso] in maps:\n{maps}");
+    let vdso_line = maps.lines().find(|l| l.ends_with("[vdso]")).unwrap();
+    let vdso_start = u64::from_str_radix(vdso_line.split('-').next().unwrap(), 16).unwrap();
+    let magic = emu.cpu.memory().read_vec(vdso_start, 4).unwrap();
+    assert_eq!(&magic, b"\x7fELF", "vdso does not start with an ELF header");
+    if arch == Arch::Arm32 {
+        assert!(maps.lines().any(|l| l.ends_with("[vectors]")), "no [vectors] in arm32 maps:\n{maps}");
+    }
+    // The return-trampoline page must never leak its internal name.
+    assert!(!maps.contains("[trampoline]"), "emulator-internal [trampoline] leaked:\n{maps}");
+
     // A library the app loaded (not a system lib) sits under /data/app/<package>, not /system.
     let dir = if arch == Arch::Arm64 { "arm64" } else { "arm32" };
     let app_lib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bench/jni").join(dir).join("libpacked.so");

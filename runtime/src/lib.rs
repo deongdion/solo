@@ -62,6 +62,11 @@ pub mod layout {
     /// Import hook stubs and the hook return stub, mapped on first use.
     pub const HOOK_STUBS: u64 = 0xffef_0000;
     pub const HOOK_STUBS_SIZE: u64 = 0x1_0000;
+    /// The kernel-provided vdso page, present in every real process's maps. Mapped and labelled
+    /// so `/proc/self/maps` carries `[vdso]`; no `AT_SYSINFO_EHDR` is published, so bionic keeps
+    /// the plain syscall path (as it already did) rather than binding vdso functions.
+    pub const VDSO_BASE: u64 = 0xffff_2000;
+    pub const VDSO_SIZE: u64 = 0x1000;
 }
 
 /// First supervisor call immediate used for host functions.
@@ -350,6 +355,23 @@ impl Emulator {
         self.cpu.map(HOST_STUBS, HOST_STUBS_SIZE, Perms::RX, "[host]")?;
         self.cpu.map(HOST_DATA, HOST_DATA_SIZE, Perms::RW, "[host data]")?;
         self.host.data_next = HOST_DATA;
+
+        // Device-realistic kernel pages for /proc/self/maps: a [vdso] every process has, and on
+        // arm32 the [vectors] page at its fixed high address. The vdso begins with an ELF header
+        // (as a real vdso is an ELF shared object) so a scanner that reads the page sees one; it
+        // exports no functions, which is why bionic falls back to syscalls.
+        self.cpu.map(VDSO_BASE, VDSO_SIZE, Perms::RX, "[vdso]")?;
+        let elf_machine: u16 = if self.arch() == Arch::Arm64 { 183 } else { 40 }; // EM_AARCH64 / EM_ARM
+        let ei_class: u8 = if self.arch() == Arch::Arm64 { 2 } else { 1 }; // ELFCLASS64 / ELFCLASS32
+        let mut ehdr = [0u8; 20];
+        ehdr[..4].copy_from_slice(b"\x7fELF");
+        ehdr[4] = ei_class;
+        ehdr[5] = 1; // ELFDATA2LSB
+        ehdr[6] = 1; // EV_CURRENT
+        ehdr[16] = 3; // e_type = ET_DYN
+        ehdr[18] = elf_machine as u8;
+        ehdr[19] = (elf_machine >> 8) as u8;
+        self.cpu.memory_mut().write(VDSO_BASE, &ehdr)?;
 
         let word = self.word();
         let mut sp = STACK_BASE;

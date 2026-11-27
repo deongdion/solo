@@ -1249,6 +1249,11 @@ impl Kernel {
                 let full = format!("{dir}/{label}");
                 let start = *lib_start.entry(full.clone()).or_insert(m.start);
                 (full.clone(), "fe:00", inode(&full), m.start - start)
+            } else if label == "[trampoline]" {
+                // The return-trampoline page. On arm32 it is Linux's high vector page at its real
+                // address 0xffff0000, which maps read as [vectors]; on arm64 there is no such page,
+                // so it is an emulator-internal region and shows anonymous, not leaking the name.
+                if is64 { (String::new(), "00:00", 0, 0) } else { ("[vectors]".to_string(), "00:00", 0, 0) }
             } else if label.starts_with("[host") || label.is_empty() {
                 // Emulator-internal regions and anonymous memory carry no name on a device.
                 (String::new(), "00:00", 0, 0)
