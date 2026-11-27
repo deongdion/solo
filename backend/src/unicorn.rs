@@ -39,7 +39,30 @@ pub struct Unicorn {
     // unicorn has no "continue": every run starts at an explicit address.
     next: u64,
     executed: u64,
+    /// Stops a run with uc_emu_stop, which unicorn's own timeout thread also calls.
+    interrupt: crate::Interrupt,
 }
+
+unsafe extern "C" {
+    fn uc_emu_stop(uc: *mut std::ffi::c_void) -> i32;
+}
+
+/// The engine pointer, for stopping from another thread.
+struct StopTarget(*mut std::ffi::c_void);
+// SAFETY: only used to call uc_emu_stop, which only sets a request flag and kicks the vCPU, and
+// only while the engine is alive (Drop clears it under the interrupt lock before closing).
+unsafe impl Send for StopTarget {}
+
+impl Drop for Unicorn {
+    fn drop(&mut self) {
+        self.interrupt.set_halt(None);
+    }
+}
+
+// SAFETY: the unicorn handle is reference-counted internally (Rc), but every clone of it lives
+// inside this value (the engine and its hooks), so the whole value moves between threads as one
+// and is never used from two threads at once.
+unsafe impl Send for Unicorn {}
 
 impl Unicorn {
     pub fn new(arch: Arch) -> Result<Unicorn, Error> {
@@ -89,7 +112,14 @@ impl Unicorn {
                 uc.reg_write(A32_FPEXC, 0x4000_0000).map_err(uc_error)?;
             }
         }
-        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0 };
+        let interrupt = crate::Interrupt::default();
+        let target = StopTarget(uc.get_handle() as *mut std::ffi::c_void);
+        interrupt.set_halt(Some(Box::new(move || {
+            let target = &target;
+            // SAFETY: see StopTarget.
+            unsafe { uc_emu_stop(target.0) };
+        })));
+        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0, interrupt };
         cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
         Ok(cpu)
@@ -196,12 +226,19 @@ impl Cpu for Unicorn {
             return Ok(stop);
         }
         result.map_err(uc_error)?;
+        if self.interrupt.is_requested() {
+            return Ok(Stop::Halted);
+        }
         self.executed = budget;
         Ok(Stop::Budget)
     }
 
     fn executed(&self) -> u64 {
         self.executed
+    }
+
+    fn interrupt(&self) -> crate::Interrupt {
+        self.interrupt.clone()
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {

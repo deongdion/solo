@@ -130,7 +130,7 @@ pub enum Data {
     /// The java.lang.Class object of a class.
     Class(ClassId),
     /// A host value attached by a model or the user (for example the entries of a HashMap).
-    Host(Box<dyn Any>),
+    Host(Box<dyn Any + Send>),
 }
 
 impl std::fmt::Debug for Data {

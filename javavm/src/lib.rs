@@ -115,7 +115,7 @@ pub enum Fail {
 pub type JResult<T> = Result<T, Fail>;
 
 /// Java behaviour supplied by the embedder or a built-in model.
-pub trait Jni {
+pub trait Jni: Send {
     fn call(&mut self, vm: &mut Vm, call: &Call) -> JResult<Value> {
         let _ = (vm, call);
         Err(Fail::Unhandled)
@@ -372,7 +372,7 @@ impl Vm {
     }
 
     /// An object of `class` carrying host data.
-    pub fn new_host_object(&mut self, class: &str, data: Box<dyn std::any::Any>) -> ObjectId {
+    pub fn new_host_object(&mut self, class: &str, data: Box<dyn std::any::Any + Send>) -> ObjectId {
         let class = self.class(class);
         self.heap.alloc(Object { class, data: Data::Host(data), fields: HashMap::new() })
     }

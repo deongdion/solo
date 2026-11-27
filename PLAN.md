@@ -173,7 +173,16 @@ aesCbc16 is dominated by per-call cost (16 bytes of work), pbkdf2 by guest compu
 
 Built-in models (`java` crate, installed by default after the embedder's handler): String (constructors from bytes/chars with charsets, getBytes, substring, indexOf, compareTo, ...), StringBuilder, boxed primitives, Object/Class/Throwable basics, System time, Charset/StandardCharsets, and HashMap/LinkedHashMap/TreeMap/HashSet/ArrayList with views, iterators and Map.Entry. Methods match on the receiver's model, so the interface named in GetMethodID does not matter (F11). HashMap iteration order, String/Long/Double/Float hash codes and `Double.toString` were checked against OpenJDK 21 output (`java/tests/models.rs`). `Native.walk` over a HashMap gives unidbg's output (with reflection opened) on both architectures with no handler code.
 
-Next: M3 (instance pool; `Emulator: Send`).
+### M3 progress
+
+- `Emulator: Send` (checked at compile time). Both backends are `Send`; the java model data is `Any + Send`.
+- Interrupts: `Emulator::interrupt()` returns a handle that stops a running call from another thread with `Error::Interrupted`. dynarmic checks its halt flag between linked blocks only when cycle counting is off, so the backend runs in slices of 2^22 instructions and checks the flag after each; unicorn is stopped with `uc_emu_stop`. Measured: an endless guest loop stops within the test's 5 s bound on both backends (`runtime/tests/pool.rs`). Slicing cost on tmbench arm64 latency, same session, HEAD vs sliced build: aesCbc16 p50 10.4 vs 10.3-10.6 µs, pbkdf2 p50 5715-5775 vs 5579-5667 µs (no measurable change).
+- Worker pool (`runtime::Pool`): one emulator per worker thread built by a factory, per-job deadline through one watchdog thread (fires at most 20 ms late), rebuild after a crash, deadline, budget, fatal JNI error or panic, optional rebuild after N jobs or above a committed-memory size, bounded queue (`PoolError::Full` instead of blocking), panics caught and reported.
+- tmbench `pool` mode, arm64 aesCbc16, two client threads per worker (same session, two runs each): direct instances k=1 74,289-98,994 calls/s, through the pool 49,053-54,343; k=8 direct 535,787-584,513, pool 189,884-294,704. unidbg M0 at k=8: 17,605. The pool costs about 8 µs per job at k=1, mostly cross-thread wake-up. Arming the watchdog used to wake its thread on every job; removing that wake-up raised pool k=1 from 40,098 to 49,053-58,883 calls/s.
+
+Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-model commit measures aesCbc16 p50 9.8-9.9 µs here vs 5.4-5.6 µs then), so only same-session numbers are compared.
+
+Next: M3 signals and save/restore of the state after JNI_OnLoad; 24 h RSS soak.
 
 ## Build
 

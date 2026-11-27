@@ -5,6 +5,9 @@ use machine::{Memory, Perms};
 
 use crate::{Arch, Cpu, Error, RETURN_SVC, Reg, Stop, TRAMPOLINE, trampoline_code};
 
+/// Instructions per JIT entry; an interrupt is seen within one slice (a few milliseconds).
+const INTERRUPT_SLICE: u64 = 1 << 22;
+
 /// Code cache per instance. dynarmic defaults to 128 MiB.
 const DEFAULT_CODE_CACHE: u64 = 0;
 
@@ -23,9 +26,22 @@ pub struct Dynarmic {
     memory: Box<Memory>,
     executed: u64,
     events: Box<Events>,
+    interrupt: crate::Interrupt,
 }
 
 struct Handle(*mut sys::DynCpu);
+
+/// The JIT pointer, for halting from another thread (dynarmic's HaltExecution is atomic).
+struct HaltTarget(*mut sys::DynCpu);
+// SAFETY: only used to call dyn_halt, which is thread-safe, and only while the Dynarmic that
+// owns the JIT is alive (Drop clears it under the interrupt lock before freeing the JIT).
+unsafe impl Send for HaltTarget {}
+
+impl Drop for Dynarmic {
+    fn drop(&mut self) {
+        self.interrupt.set_halt(None);
+    }
+}
 
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -96,7 +112,14 @@ impl Dynarmic {
         if raw.is_null() {
             return Err(Error::Backend("dyn_new failed".into()));
         }
-        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events };
+        let interrupt = crate::Interrupt::default();
+        let target = HaltTarget(raw);
+        interrupt.set_halt(Some(Box::new(move || {
+            let target = &target;
+            // SAFETY: see HaltTarget.
+            unsafe { sys::dyn_halt(target.0) }
+        })));
+        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events, interrupt };
         if arch == Arch::Arm32 {
             // SAFETY: valid handle; user mode, ARM state.
             unsafe { sys::dyn_set_reg(cpu.cpu.0, 16, 0x10) };
@@ -196,24 +219,39 @@ impl Cpu for Dynarmic {
 
     fn resume(&mut self, budget: u64) -> Result<Stop, Error> {
         self.events.stop = None;
-        let mut executed = 0u64;
-        // SAFETY: valid handle; hooks point at self.events which is boxed and alive.
-        let reason = unsafe { sys::dyn_run(self.cpu.0, budget, &mut executed) };
-        self.executed = executed;
-        if reason & sys::DYN_HALT_ERROR != 0 {
-            return Err(Error::Backend("dynarmic threw during execution".into()));
+        self.executed = 0;
+        // With cycle counting on, dynarmic checks for a halt only when a slice of cycles runs
+        // out, not between linked blocks, so a guest loop would never see an interrupt. Running in
+        // slices bounds the interrupt latency to one slice.
+        let mut remaining = budget;
+        loop {
+            let slice = remaining.min(INTERRUPT_SLICE);
+            let mut executed = 0u64;
+            // SAFETY: valid handle; hooks point at self.events which is boxed and alive.
+            let reason = unsafe { sys::dyn_run(self.cpu.0, slice, &mut executed) };
+            self.executed = self.executed.saturating_add(executed);
+            remaining = remaining.saturating_sub(executed);
+            if reason & sys::DYN_HALT_ERROR != 0 {
+                return Err(Error::Backend("dynarmic threw during execution".into()));
+            }
+            if let Some(stop) = self.events.stop.take() {
+                return Ok(stop);
+            }
+            if reason & sys::DYN_HALT_EXTERNAL != 0 || self.interrupt.is_requested() {
+                return Ok(Stop::Halted);
+            }
+            if remaining == 0 || executed == 0 {
+                return Ok(Stop::Budget);
+            }
         }
-        if let Some(stop) = self.events.stop.take() {
-            return Ok(stop);
-        }
-        if reason & sys::DYN_HALT_EXTERNAL != 0 {
-            return Ok(Stop::Halted);
-        }
-        Ok(Stop::Budget)
     }
 
     fn executed(&self) -> u64 {
         self.executed
+    }
+
+    fn interrupt(&self) -> crate::Interrupt {
+        self.interrupt.clone()
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {

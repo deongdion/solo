@@ -3,7 +3,10 @@
 //! 1000 iterations. Output hashes are the first 16 hex digits of SHA-256, as Baseline prints them,
 //! so results compare line by line with bench/baseline/results.txt.
 //!
-//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|throughput <instances> <seconds>]
+//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|throughput <instances> <seconds>|pool <workers> <seconds>]
+//!
+//! `throughput` runs one instance per thread directly; `pool` runs the same call as jobs of a
+//! `runtime::Pool` (with its per-job deadline) fed by two client threads per worker.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -22,8 +25,7 @@ struct Bench {
     emu: Emulator,
 }
 
-impl Bench {
-    fn new(arch: Arch, backend: BackendKind) -> Bench {
+fn build(arch: Arch, backend: BackendKind) -> Emulator {
         let (abi, lib) = if arch == Arch::Arm64 { ("arm64-v8a", "lib64") } else { ("armeabi-v7a", "lib") };
         let mut options = Options::new(arch);
         options.backend = backend;
@@ -35,19 +37,28 @@ impl Bench {
         let file = resources().join("test/resources/example_binaries").join(abi).join("libtmessages.29.so");
         let module = emu.load(file.to_str().unwrap()).unwrap_or_else(|e| panic!("load: {e}"));
         emu.call_jni_onload(module).unwrap_or_else(|e| panic!("JNI_OnLoad: {e}\n{}", emu.summary()));
-        Bench { emu }
-    }
+        emu
+}
 
-    fn aes_cbc(&mut self) -> Vec<u8> {
-        let vm = &mut self.emu.vm;
+fn aes(emu: &mut Emulator) -> Vec<u8> {
+        let vm = &mut emu.vm;
         let data = vm.new_bytes(&[0; 16]);
         let key = vm.new_bytes(&[0; 32]);
         let iv = vm.new_bytes(&[0; 16]);
         let args = [Value::Object(data), Value::Object(key), Value::Object(iv), Value::Int(0), Value::Int(16), Value::Int(0), Value::Int(0)];
-        self.emu
+        emu
             .call_static(UTILITIES, "aesCbcEncryptionByteArray", "([B[B[BIIII)V", &args)
             .unwrap_or_else(|e| panic!("aesCbcEncryptionByteArray: {e}"));
-        self.emu.vm.bytes(data).unwrap()
+        emu.vm.bytes(data).unwrap()
+}
+
+impl Bench {
+    fn new(arch: Arch, backend: BackendKind) -> Bench {
+        Bench { emu: build(arch, backend) }
+    }
+
+    fn aes_cbc(&mut self) -> Vec<u8> {
+        aes(&mut self.emu)
     }
 
     fn pbkdf2(&mut self, iterations: i32) -> Vec<u8> {
@@ -82,6 +93,44 @@ fn main() {
         Some(other) => panic!("backend {other} not available in this build"),
     };
     let mode = args.get(3).map(String::as_str).unwrap_or("latency");
+    if mode == "pool" {
+        let workers: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(1);
+        let seconds: u64 = args.get(5).and_then(|a| a.parse().ok()).unwrap_or(10);
+        let started = Instant::now();
+        let config = runtime::PoolConfig { workers, queue_limit: workers * 4, ..runtime::PoolConfig::default() };
+        let pool = std::sync::Arc::new(
+            runtime::Pool::new(config, move || {
+                let mut emu = build(arch, backend);
+                for _ in 0..500 {
+                    aes(&mut emu);
+                }
+                Ok(emu)
+            })
+            .expect("pool"),
+        );
+        println!("init_all_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0);
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        let clients: Vec<_> = (0..workers * 2)
+            .map(|_| {
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    let mut n = 0u64;
+                    while Instant::now() < deadline {
+                        match pool.run(|emu| Ok(aes(emu))) {
+                            Ok(_) => n += 1,
+                            Err(runtime::PoolError::Full) => std::thread::yield_now(),
+                            Err(e) => panic!("{e}"),
+                        }
+                    }
+                    n
+                })
+            })
+            .collect();
+        let calls: u64 = clients.into_iter().map(|h| h.join().unwrap()).sum();
+        let stats = pool.stats();
+        println!("workers={workers} calls_per_s={:.0} failed={} builds={}", calls as f64 / seconds as f64, stats.failed, stats.builds);
+        return;
+    }
     if mode == "throughput" {
         let instances: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(1);
         let seconds: u64 = args.get(5).and_then(|a| a.parse().ok()).unwrap_or(10);

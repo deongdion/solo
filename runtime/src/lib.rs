@@ -9,6 +9,7 @@
 
 mod host;
 mod jni;
+pub mod pool;
 pub mod report;
 
 use std::path::PathBuf;
@@ -22,6 +23,13 @@ pub use host::HostFunction;
 pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
 pub use jni::OnLoadEvent;
 pub use report::{Crash, StopKind, Summary};
+pub use pool::{Pool, PoolConfig, PoolError, PoolStats, Ticket};
+
+// Emulators move to pool worker threads.
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Emulator>();
+};
 
 /// Guest memory layout, the same as unidbg's so addresses can be compared one to one.
 pub mod layout {
@@ -58,6 +66,9 @@ pub enum Error {
     Exited(i32),
     #[error("instruction budget exhausted")]
     Budget,
+    /// Stopped by `Interrupt::interrupt` (a deadline or a cancellation).
+    #[error("interrupted")]
+    Interrupted,
     #[error("{error} (called from {caller})")]
     Jni { error: javavm::JniError, caller: String },
     /// A Java exception was pending when a call from the host returned.
@@ -197,6 +208,17 @@ impl Emulator {
 
     pub fn arch(&self) -> Arch {
         self.cpu.arch()
+    }
+
+    /// A handle that stops the running call from another thread with `Error::Interrupted`.
+    /// An interrupt that arrives between calls stops the next call unless `clear_interrupt` runs
+    /// first.
+    pub fn interrupt(&self) -> backend::Interrupt {
+        self.cpu.interrupt()
+    }
+
+    pub fn clear_interrupt(&self) {
+        self.cpu.interrupt().take();
     }
 
     pub fn word(&self) -> u64 {
@@ -340,7 +362,11 @@ impl Emulator {
     fn run_loop(&mut self) -> Result<(), Error> {
         // One budget per call, spread over the resumes between syscalls and host calls.
         let mut remaining = self.budget;
+        let interrupt = self.cpu.interrupt();
         loop {
+            if interrupt.take() {
+                return Err(Error::Interrupted);
+            }
             let stop = self.cpu.resume(remaining)?;
             remaining = remaining.saturating_sub(self.cpu.executed());
             if remaining == 0 && stop != Stop::Returned {
@@ -367,7 +393,10 @@ impl Emulator {
                 }
                 Stop::Svc(imm) => return Err(self.crash(StopKind::UnknownSvc(imm))),
                 Stop::Budget => return Err(Error::Budget),
-                Stop::Halted => return Err(self.crash(StopKind::Halted)),
+                // An interrupt halts the JIT; the flag says whether this one was it. A halt left
+                // over from an interrupt already handled just resumes.
+                Stop::Halted if interrupt.take() => return Err(Error::Interrupted),
+                Stop::Halted => {}
                 Stop::Fault { address, write } => return Err(self.crash(StopKind::Fault { address, write })),
                 Stop::Exception { pc, kind } => return Err(self.crash(StopKind::Exception { pc, kind })),
             }

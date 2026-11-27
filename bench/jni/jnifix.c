@@ -206,3 +206,10 @@ JNIEXPORT jstring JNICALL Java_fix_Native_walk(JNIEnv* env, jclass self, jobject
     say("\n");
     return (*env)->NewStringUTF(env, out);
 }
+
+// Spins for `rounds` iterations (a negative count never returns); for deadline tests.
+JNIEXPORT jint JNICALL Java_fix_Native_spin(JNIEnv* env, jclass self, jint rounds) {
+    volatile jint acc = 0;
+    for (jint i = 0; rounds < 0 || i < rounds; i++) acc += i;
+    return acc;
+}
