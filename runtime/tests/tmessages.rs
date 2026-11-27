@@ -1,6 +1,8 @@
 //! Loads libtmessages.29.so (the M0 benchmark library) with its dependencies and runs its init
 //! functions. JNI_OnLoad needs the JNI layer (M2) and is not called here.
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -21,6 +23,7 @@ fn check(arch: Arch) {
     }
     let started = Instant::now();
     let mut options = Options::new(arch);
+    options.backend = common::backend();
     options.library_dirs = vec![sdk];
     options.kernel.echo_output = false;
     options.kernel.random_seed = Some(1);

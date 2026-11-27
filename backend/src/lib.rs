@@ -45,6 +45,9 @@ pub enum Reg {
     Pc,
     /// Thread pointer (TPIDR_EL0 on A64, TPIDRURO on A32).
     Tls,
+    /// 64-bit floating-point register `n`: the low half of Vn on A64, Dn on A32. Writing clears
+    /// the upper half of Vn on A64.
+    Fp(u8),
 }
 
 /// Why a run returned.

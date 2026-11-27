@@ -336,6 +336,7 @@ uint64_t dyn_reg(const DynCpu* cpu, uint32_t index) {
     if (cpu->is64) {
         const auto& j = *cpu->jit64;
         if (index <= 30) return j.GetRegister(index);
+        if (index >= 64 && index < 96) return j.GetVector(index - 64)[0];
         switch (index) {
             case 31: return j.GetSP();
             case 32: return j.GetPC();
@@ -347,6 +348,11 @@ uint64_t dyn_reg(const DynCpu* cpu, uint32_t index) {
     }
     auto& j = *cpu->jit32;
     if (index <= 15) return j.Regs()[index];
+    if (index >= 64 && index < 96) {
+        const auto& ext = j.ExtRegs();
+        const size_t d = (index - 64) * 2;
+        return ext[d] | (static_cast<uint64_t>(ext[d + 1]) << 32);
+    }
     switch (index) {
         case 16: return j.Cpsr();
         case 17: return j.Fpscr();
@@ -359,6 +365,7 @@ void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value) {
     if (cpu->is64) {
         auto& j = *cpu->jit64;
         if (index <= 30) { j.SetRegister(index, value); return; }
+        if (index >= 64 && index < 96) { j.SetVector(index - 64, {value, 0}); return; }
         switch (index) {
             case 31: j.SetSP(value); break;
             case 32: j.SetPC(value); break;
@@ -370,6 +377,13 @@ void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value) {
     }
     auto& j = *cpu->jit32;
     if (index <= 15) { j.Regs()[index] = static_cast<uint32_t>(value); return; }
+    if (index >= 64 && index < 96) {
+        auto& ext = j.ExtRegs();
+        const size_t d = (index - 64) * 2;
+        ext[d] = static_cast<uint32_t>(value);
+        ext[d + 1] = static_cast<uint32_t>(value >> 32);
+        return;
+    }
     switch (index) {
         case 16: j.SetCpsr(static_cast<uint32_t>(value)); break;
         case 17: j.SetFpscr(static_cast<uint32_t>(value)); break;

@@ -2,22 +2,28 @@
 
 use machine::{Memory, Perms};
 use unicorn_engine::unicorn_const::{Arch as UcArch, HookType, MemType, Mode, Prot};
+use unicorn_engine::{RegisterARM, RegisterARM64};
 
 use crate::{Arch, Cpu, Error, RETURN_SVC, Reg, Stop, TRAMPOLINE, trampoline_code};
 
-// Register ids from unicorn's arm64.h and arm.h.
-const A64_X0: i32 = 199;
-const A64_X29: i32 = 1;
-const A64_X30: i32 = 2;
-const A64_SP: i32 = 4;
-const A64_PC: i32 = 260;
-const A64_TPIDR_EL0: i32 = 262;
-const A32_R0: i32 = 66;
-const A32_SP: i32 = 12;
-const A32_LR: i32 = 10;
-const A32_PC: i32 = 11;
-const A32_C13_C0_3: i32 = 113;
-const A32_CPSR: i32 = 3;
+// Register ids from the crate's generated enums, so they always match the linked unicorn.
+const A64_X0: i32 = RegisterARM64::X0 as i32;
+const A64_X29: i32 = RegisterARM64::X29 as i32;
+const A64_X30: i32 = RegisterARM64::X30 as i32;
+const A64_SP: i32 = RegisterARM64::SP as i32;
+const A64_PC: i32 = RegisterARM64::PC as i32;
+const A64_D0: i32 = RegisterARM64::D0 as i32;
+const A64_TPIDR_EL0: i32 = RegisterARM64::TPIDR_EL0 as i32;
+const A64_CPACR_EL1: i32 = RegisterARM64::CPACR_EL1 as i32;
+const A32_R0: i32 = RegisterARM::R0 as i32;
+const A32_SP: i32 = RegisterARM::SP as i32;
+const A32_LR: i32 = RegisterARM::LR as i32;
+const A32_PC: i32 = RegisterARM::PC as i32;
+const A32_D0: i32 = RegisterARM::D0 as i32;
+const A32_CPSR: i32 = RegisterARM::CPSR as i32;
+const A32_FPEXC: i32 = RegisterARM::FPEXC as i32;
+const A32_C1_C0_2: i32 = RegisterARM::C1_C0_2 as i32;
+const A32_C13_C0_3: i32 = RegisterARM::C13_C0_3 as i32;
 
 #[derive(Default)]
 struct Events {
@@ -44,16 +50,25 @@ impl Unicorn {
         let mut uc = unicorn_engine::Unicorn::new_with_data(uc_arch, mode, Events::default()).map_err(uc_error)?;
         uc.add_intr_hook(move |uc, _intno| {
             let pc = uc.pc_read().unwrap_or(0);
+            // The immediate comes from the svc just executed: 4 bytes on A64 and ARM, 2 in Thumb.
+            let thumb = arch == Arch::Arm32 && uc.reg_read(A32_CPSR).unwrap_or(0) & 0x20 != 0;
             let mut word = [0u8; 4];
-            let imm = match uc.mem_read(pc.wrapping_sub(4), &mut word) {
-                Ok(()) => {
-                    let insn = u32::from_le_bytes(word);
-                    match arch {
-                        Arch::Arm64 => (insn >> 5) & 0xffff,
-                        Arch::Arm32 => insn & 0x00ff_ffff,
-                    }
+            let imm = if thumb {
+                match uc.mem_read(pc.wrapping_sub(2), &mut word[..2]) {
+                    Ok(()) => u16::from_le_bytes([word[0], word[1]]) as u32 & 0xff,
+                    Err(_) => u32::MAX,
                 }
-                Err(_) => u32::MAX,
+            } else {
+                match uc.mem_read(pc.wrapping_sub(4), &mut word) {
+                    Ok(()) => {
+                        let insn = u32::from_le_bytes(word);
+                        match arch {
+                            Arch::Arm64 => (insn >> 5) & 0xffff,
+                            Arch::Arm32 => insn & 0x00ff_ffff,
+                        }
+                    }
+                    Err(_) => u32::MAX,
+                }
             };
             uc.get_data_mut().stop = Some(if imm == RETURN_SVC { Stop::Returned } else { Stop::Svc(imm) });
             let _ = uc.emu_stop();
@@ -65,6 +80,15 @@ impl Unicorn {
             false
         })
         .map_err(uc_error)?;
+        // Enable the FP/SIMD unit, as Android's kernel does for user processes.
+        match arch {
+            Arch::Arm64 => uc.reg_write(A64_CPACR_EL1, 3 << 20).map_err(uc_error)?,
+            Arch::Arm32 => {
+                let cpacr = uc.reg_read(A32_C1_C0_2).map_err(uc_error)?;
+                uc.reg_write(A32_C1_C0_2, cpacr | (0xf << 20)).map_err(uc_error)?;
+                uc.reg_write(A32_FPEXC, 0x4000_0000).map_err(uc_error)?;
+            }
+        }
         let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0 };
         cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
@@ -79,11 +103,13 @@ impl Unicorn {
             (Arch::Arm64, Reg::Sp) => A64_SP,
             (Arch::Arm64, Reg::Pc) => A64_PC,
             (Arch::Arm64, Reg::Tls) => A64_TPIDR_EL0,
+            (Arch::Arm64, Reg::Fp(n)) => A64_D0 + n as i32,
             (Arch::Arm32, Reg::General(n)) => A32_R0 + n as i32,
             (Arch::Arm32, Reg::Sp) => A32_SP,
             (Arch::Arm32, Reg::Lr) => A32_LR,
             (Arch::Arm32, Reg::Pc) => A32_PC,
             (Arch::Arm32, Reg::Tls) => A32_C13_C0_3,
+            (Arch::Arm32, Reg::Fp(n)) => A32_D0 + n as i32,
         }
     }
 }

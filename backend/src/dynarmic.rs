@@ -118,11 +118,13 @@ impl Dynarmic {
             (Arch::Arm64, Reg::Sp) => 31,
             (Arch::Arm64, Reg::Pc) => 32,
             (Arch::Arm64, Reg::Tls) => 34,
+            (Arch::Arm64, Reg::Fp(n)) => 64 + n as u32,
             (Arch::Arm32, Reg::General(n)) => n as u32,
             (Arch::Arm32, Reg::Sp) => 13,
             (Arch::Arm32, Reg::Lr) => 14,
             (Arch::Arm32, Reg::Pc) => 15,
             (Arch::Arm32, Reg::Tls) => 18,
+            (Arch::Arm32, Reg::Fp(n)) => 64 + n as u32,
         }
     }
 }

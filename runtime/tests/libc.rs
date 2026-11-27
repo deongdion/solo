@@ -1,5 +1,7 @@
 //! Loads the bundled Android 6.0 bionic and calls into it.
 
+mod common;
+
 use std::path::PathBuf;
 
 use backend::Arch;
@@ -16,6 +18,7 @@ fn sdk(arch: Arch) -> Option<PathBuf> {
 fn emulator(arch: Arch) -> Option<Emulator> {
     let dir = sdk(arch)?;
     let mut options = Options::new(arch);
+    options.backend = common::backend();
     options.library_dirs = vec![dir];
     options.kernel.echo_output = false;
     options.kernel.random_seed = Some(1);
@@ -79,6 +82,7 @@ fn libc_arm32() {
 fn crash_has_backtrace(arch: Arch) -> Option<runtime::Crash> {
     let dir = sdk(arch)?;
     let mut options = Options::new(arch);
+    options.backend = common::backend();
     options.library_dirs = vec![dir];
     options.kernel.echo_output = false;
     options.precise_faults = true;

@@ -31,6 +31,7 @@ typedef struct DynHooks {
 } DynHooks;
 
 // page_table: one host pointer per 4 KiB guest page (null when unmapped).
+// Registers: 64..95 are the 64-bit FP registers (low half of V0..V31 on A64, D0..D31 on A32).
 // For A64 it holds 1 << (address_bits - 12) entries; for A32 it holds 1 << 20 entries.
 // flags: DYN_PRECISE_FAULTS stops at the faulting instruction (its PC is reported) at the cost of
 // a check after every data access.

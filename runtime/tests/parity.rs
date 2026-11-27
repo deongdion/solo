@@ -2,6 +2,8 @@
 //! result into a buffer; bench/parity/expected.txt is what unidbg 30911d7 produced for it with
 //! both of its backends on both architectures (see bench/parity/README.md).
 
+mod common;
+
 use std::path::PathBuf;
 
 use backend::Arch;
@@ -20,6 +22,7 @@ fn run(arch: Arch, file: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut options = Options::new(arch);
+    options.backend = common::backend();
     options.library_dirs = vec![sdk];
     options.kernel.echo_output = false;
     options.budget = 1_000_000_000;
