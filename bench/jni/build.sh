@@ -23,3 +23,15 @@ build() {
 }
 build arm64 aarch64-linux-android23
 build arm32 armv7a-linux-androideabi23 -mthumb
+
+# libpacked.so: packed.c with its pk_code and pk_data sections encrypted by pack.py, next to the
+# unencrypted build (libpacked_plain.so) that an unpacked dump must equal.
+packed() {
+    local out=$1 target=$2; shift 2
+    "$LLVM/clang" --target="$target" -O2 -fPIC -shared -nostdlib -fuse-ld=lld -fno-stack-protector \
+        "$@" packed.c -Wl,-soname,libpacked.so -Wl,--no-undefined -o "$out/libpacked_plain.so"
+    cp "$out/libpacked_plain.so" "$out/libpacked.so"
+    python pack.py "$out/libpacked.so"
+}
+packed arm64 aarch64-linux-android23
+packed arm32 armv7a-linux-androideabi23 -mthumb

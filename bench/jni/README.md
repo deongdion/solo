@@ -103,3 +103,13 @@ breakpoint whose callback continues.
 
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).
+
+## Unpacker (PLAN.md M4)
+
+`libpacked.so` is `packed.c` with its `pk_code` and `pk_data` sections XORed by `pack.py`;
+`libpacked_plain.so` is the same build unencrypted. Its init function decrypts `pk_code` (on arm64
+with 32-byte `stp q` stores) and clears the ELF magic in memory; the exported `unlock()` decrypts
+`pk_data` after the load. `UnpackRun.java` runs unidbg's `ElfUnpacker` on it: with unicorn2 the dump
+differs from `libpacked_plain.so` in 70 bytes (the cleared magic and the 66 bytes `unlock()`
+decrypted); with dynarmic the load fails with `UnsupportedOperationException`. The runtime's dump
+(`runtime/tests/unpack.rs`) equals `libpacked_plain.so`.

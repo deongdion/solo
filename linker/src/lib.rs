@@ -77,7 +77,8 @@ impl Module {
         address >= self.base && address < self.base + self.size
     }
 
-    fn matches(&self, name: &str) -> bool {
+    /// Whether `name` (a file name, path or soname) names this module.
+    pub fn matches(&self, name: &str) -> bool {
         let file = name.rsplit('/').next().unwrap_or(name);
         self.name == file || self.path == name || self.soname.as_deref() == Some(file)
     }

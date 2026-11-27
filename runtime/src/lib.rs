@@ -15,6 +15,7 @@ mod jni;
 pub mod pool;
 pub mod report;
 mod tracing;
+mod unpack;
 
 use std::path::PathBuf;
 
@@ -28,6 +29,7 @@ pub use gdb::GdbStub;
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
 pub use tracing::MemoryAccess;
+pub use unpack::{UnpackConfig, Unpacked};
 pub use host::HostFunction;
 pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
 pub use jni::OnLoadEvent;
@@ -107,6 +109,8 @@ pub enum Error {
     NoNative(String),
     #[error("{0} is not exported by the module")]
     NoSymbol(String),
+    #[error("unpack: {0}")]
+    Unpack(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +203,7 @@ pub struct Emulator {
     /// Watched accesses taken from the cpu while tracing, tagged with their instruction.
     pub(crate) accesses: Vec<tracing::MemoryAccess>,
     pub(crate) debug: debug::Debug,
+    pub(crate) unpack: unpack::Unpack,
 }
 
 impl Emulator {
@@ -232,6 +237,7 @@ impl Emulator {
             trace: None,
             accesses: Vec::new(),
             debug: debug::Debug::default(),
+            unpack: unpack::Unpack::default(),
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -269,6 +275,7 @@ impl Emulator {
             trace: None,
             accesses: Vec::new(),
             debug: self.debug.clone(),
+            unpack: self.unpack.clone(),
         })
     }
 
@@ -293,6 +300,7 @@ impl Emulator {
         self.hooks = template.hooks.clone();
         // The breakpoints are in the restored memory; this emulator's debugger stays.
         self.debug.breakpoints = template.debug.breakpoints.clone();
+        self.unpack = template.unpack.clone();
         Ok(())
     }
 
@@ -385,6 +393,7 @@ impl Emulator {
     pub fn load(&mut self, name: &str) -> Result<usize, Error> {
         let mut hooks = host::LinkHooks { host: &mut self.host };
         let loaded = self.linker.load(self.cpu.as_mut(), &self.resolver, &mut hooks, name)?;
+        self.unpack_baselines(&loaded.init_order)?;
         self.run_init(&loaded.init_order)?;
         Ok(loaded.module)
     }
