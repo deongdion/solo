@@ -117,6 +117,25 @@ fn run(arch: Arch) {
     let status = read_file(&mut emu, libc, "/proc/self/status");
     assert!(status.contains("TracerPid:\t0"), "{status}");
 
+    // /proc/self/maps reads like a device, not an emulator: libc under an absolute system path,
+    // a nonzero inode, no bare soname and no emulator-internal "[host...]" label leaked.
+    let maps = read_file(&mut emu, libc, "/proc/self/maps");
+    let sys = if arch == Arch::Arm64 { "/system/lib64/libc.so" } else { "/system/lib/libc.so" };
+    assert!(maps.contains(sys), "libc not at a system path:\n{maps}");
+    assert!(!maps.contains("[host"), "emulator-internal region leaked:\n{maps}");
+    let libc_line = maps.lines().find(|l| l.ends_with("/libc.so")).expect("libc line");
+    // Fields: addr perms offset dev inode path. The inode (field 5) must be nonzero.
+    let inode = libc_line.split_whitespace().nth(4).unwrap();
+    assert_ne!(inode, "0", "zero inode is a tell: {libc_line}");
+
+    // A library the app loaded (not a system lib) sits under /data/app/<package>, not /system.
+    let dir = if arch == Arch::Arm64 { "arm64" } else { "arm32" };
+    let app_lib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bench/jni").join(dir).join("libpacked.so");
+    emu.load(app_lib.to_str().unwrap()).unwrap();
+    let maps = read_file(&mut emu, libc, "/proc/self/maps");
+    assert!(maps.contains("/data/app/com.example.app-1/lib/"), "app lib not under /data/app:\n{maps}");
+    assert!(!maps.lines().any(|l| l.ends_with("/system/lib64/libpacked.so") || l.ends_with("/system/lib/libpacked.so")));
+
     // ptrace(PTRACE_TRACEME) succeeds (returns 0), as on a real undebugged process: an anti-debug
     // check that reads a failure as "already traced" must not fire, and it is not left unhandled.
     let nr_ptrace = if arch == Arch::Arm64 { 117 } else { 26 };

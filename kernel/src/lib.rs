@@ -92,6 +92,9 @@ pub struct Config {
     pub pid: u32,
     pub uid: u32,
     pub process_name: String,
+    /// Application package, for the `/data/app/<package>-1/lib/<abi>` paths that `/proc/self/maps`
+    /// shows for the app's own libraries (a bare soname with a zero inode is an emulator tell).
+    pub package: String,
     pub executable: String,
     /// Print each file operation as one line (PLAN.md F5).
     pub trace_files: bool,
@@ -113,7 +116,8 @@ impl Default for Config {
         Config {
             pid: 2048,
             uid: 10000,
-            process_name: "app".into(),
+            process_name: "com.example.app".into(),
+            package: "com.example.app".into(),
             executable: "/system/bin/app_process".into(),
             trace_files: false,
             trace_syscalls: false,
@@ -1205,18 +1209,56 @@ impl Kernel {
     }
 
     /// `/proc/self/maps` text for the current memory map.
-    pub fn proc_maps(memory: &machine::Memory) -> String {
+    fn proc_maps(&self, memory: &machine::Memory) -> String {
+        let is64 = memory.address_bits() > 32;
+        let (sys_dir, abi) = if is64 { ("/system/lib64", "arm64-v8a") } else { ("/system/lib", "armeabi-v7a") };
+        // Bionic and framework libraries live in the system image; everything else the app loaded
+        // sits in its own install directory, as on a device.
+        let system: &[&str] = &[
+            "libc.so", "libm.so", "libdl.so", "liblog.so", "libz.so", "libstdc++.so", "libc++.so",
+            "libc++_shared.so", "libandroid.so", "libjnigraphics.so", "libEGL.so", "libGLESv1_CM.so",
+            "libGLESv2.so", "libGLESv3.so", "libOpenSLES.so", "libOpenMAXAL.so", "libmediandk.so",
+            "libnativewindow.so", "libcutils.so", "libutils.so", "libbinder.so", "libcrypto.so", "libssl.so",
+        ];
+        let app_dir = format!("/data/app/{}-1/lib/{abi}", self.config.package);
+        // A stable nonzero inode per path so the same file reads the same across regions.
+        let inode = |path: &str| -> u64 {
+            let mut h: u64 = 1469598103934665603;
+            for b in path.bytes() {
+                h = (h ^ b as u64).wrapping_mul(1099511628211);
+            }
+            (h & 0xff_ffff) | 0x10000 // 6-digit range, never zero
+        };
+
         let mut out = String::new();
+        // The start of each library's mapping, to render later segments' file offsets.
+        let mut lib_start: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for m in memory.mappings() {
             let p = m.perms;
+            let (perms, label) = (
+                format!(
+                    "{}{}{}p",
+                    if p.contains(Perms::READ) { 'r' } else { '-' },
+                    if p.contains(Perms::WRITE) { 'w' } else { '-' },
+                    if p.contains(Perms::EXEC) { 'x' } else { '-' },
+                ),
+                m.label.as_str(),
+            );
+            let (path, dev, ino, offset) = if label.ends_with(".so") {
+                let dir = if system.contains(&label) { sys_dir.to_string() } else { app_dir.clone() };
+                let full = format!("{dir}/{label}");
+                let start = *lib_start.entry(full.clone()).or_insert(m.start);
+                (full.clone(), "fe:00", inode(&full), m.start - start)
+            } else if label.starts_with("[host") || label.is_empty() {
+                // Emulator-internal regions and anonymous memory carry no name on a device.
+                (String::new(), "00:00", 0, 0)
+            } else {
+                // [stack], [heap], [vdso], ... keep their pseudo-path and no device.
+                (label.to_string(), "00:00", 0, 0)
+            };
             out.push_str(&format!(
-                "{:08x}-{:08x} {}{}{}p 00000000 00:00 0          {}\n",
-                m.start,
-                m.end,
-                if p.contains(Perms::READ) { 'r' } else { '-' },
-                if p.contains(Perms::WRITE) { 'w' } else { '-' },
-                if p.contains(Perms::EXEC) { 'x' } else { '-' },
-                m.label
+                "{:08x}-{:08x} {perms} {offset:08x} {dev} {ino:<10} {path}\n",
+                m.start, m.end
             ));
         }
         out
@@ -1224,9 +1266,10 @@ impl Kernel {
 
     /// Refreshes the virtual files that mirror process state.
     pub fn refresh_proc(&mut self, memory: &machine::Memory) {
-        self.vfs.add_file("/proc/self/maps", Self::proc_maps(memory).into_bytes());
+        let maps = self.proc_maps(memory).into_bytes();
+        self.vfs.add_file("/proc/self/maps", maps.clone());
         let pid = self.config.pid;
-        self.vfs.add_file(&format!("/proc/{pid}/maps"), Self::proc_maps(memory).into_bytes());
+        self.vfs.add_file(&format!("/proc/{pid}/maps"), maps);
         let mut cmdline = self.config.process_name.clone().into_bytes();
         cmdline.push(0);
         self.vfs.add_file("/proc/self/cmdline", cmdline.clone());

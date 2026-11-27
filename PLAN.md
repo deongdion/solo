@@ -230,7 +230,9 @@ Next: 24 h RSS soak result.
 
 - Anti-emulation, ptrace (F15): `ptrace(PTRACE_TRACEME)` returned ENOSYS, so an anti-debug check that reads failure as "a debugger already has me" flagged the emulator at once. It now returns 0 (the syscall, 117/26, as unidbg does), so TRACEME succeeds like an undebugged process and stays consistent with `/proc/self/status` TracerPid 0. `runtime/tests/device.rs` checks it returns 0 and is not left unhandled. Still open for F15 depth: `/proc/self/maps` realism (absolute library paths, `[stack]`/`[heap]`/`[vdso]` labels, non-zero inode/dev), flagged by the agent run.
 
-Next: /proc/self/maps realism (F15), JNI-lookup misses (F16), deterministic threads check (F18), device trace diff (F17).
+- Anti-emulation, `/proc/self/maps` (F15): the maps read like an emulator — a bare soname (`libc.so`), a zero inode/dev and no absolute path. Now a library maps under an absolute device path (bionic and framework libraries under `/system/lib64` or `/system/lib`, everything else the app loaded under `/data/app/<package>-1/lib/<abi>`, `package` from `kernel::Config`), with a stable nonzero inode, a device of `fe:00`, and each later segment's file offset; emulator-internal regions (`[host]`, host data, hook stubs) and anonymous memory show no name instead of leaking an internal label. `runtime/tests/device.rs` checks libc sits at a system path with a nonzero inode, an app library sits under `/data/app`, and no `[host...]` label leaks. Default `process_name` is now `com.example.app`, not `app`. Still open for full maps parity: `[vdso]`/`[vectors]` pages and per-thread stacks.
+
+Next: JNI-lookup misses (F16), deterministic threads check (F18), device trace diff (F17).
 
 ## Build
 
