@@ -50,6 +50,9 @@ pub mod layout {
 /// First supervisor call immediate used for host functions.
 pub const HOST_BASE: u32 = 0x100;
 
+/// Instructions a guest thread runs before the next runnable thread gets the CPU.
+const THREAD_SLICE: u64 = 200_000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -69,6 +72,9 @@ pub enum Error {
     /// Stopped by `Interrupt::interrupt` (a deadline or a cancellation).
     #[error("interrupted")]
     Interrupted,
+    /// Every guest thread waits on a futex and none can time out.
+    #[error("deadlock: every guest thread waits")]
+    Deadlock,
     #[error("{error} (called from {caller})")]
     Jni { error: javavm::JniError, caller: String },
     /// A Java exception was pending when a call from the host returned.
@@ -377,6 +383,11 @@ impl Emulator {
     /// on AArch64, aligned register pairs for 64-bit values on 32-bit) and returns its result
     /// registers. The caller's PC, LR and SP are restored, so this nests inside host calls.
     pub fn call_slots(&mut self, function: u64, slots: &[javavm::args::Slot]) -> Result<javavm::args::Returned, Error> {
+        // Calls from the host run on the main thread; nested calls (from a JNI callback) run on
+        // the thread that made the callback.
+        if self.depth == 0 {
+            self.kernel.begin_call(self.cpu.as_mut());
+        }
         let saved_pc = self.cpu.pc();
         let saved_lr = self.cpu.reg(Reg::Lr);
         let saved_sp = self.cpu.reg(Reg::Sp);
@@ -396,7 +407,9 @@ impl Emulator {
         self.cpu.set_reg(Reg::Lr, TRAMPOLINE);
         self.cpu.set_pc(function);
         self.depth += 1;
+        self.kernel.threads.enter();
         let result = self.run_loop();
+        self.kernel.threads.leave();
         self.depth -= 1;
         let returned = javavm::args::Returned::read(self.cpu.as_ref());
         self.cpu.set_reg(Reg::Sp, saved_sp);
@@ -414,16 +427,27 @@ impl Emulator {
             if interrupt.take() {
                 return Err(Error::Interrupted);
             }
-            let stop = self.cpu.resume(remaining)?;
+            // With several guest threads, run in slices and rotate between them.
+            let threaded = self.kernel.threads.count() > 1;
+            let slice = if threaded { remaining.min(THREAD_SLICE) } else { remaining };
+            let stop = self.cpu.resume(slice)?;
             remaining = remaining.saturating_sub(self.cpu.executed());
             if remaining == 0 && stop != Stop::Returned {
                 return Err(Error::Budget);
             }
             match stop {
-                Stop::Returned => return Ok(()),
+                Stop::Returned if self.kernel.threads.owner().is_none_or(|o| o == self.kernel.threads.current) => return Ok(()),
+                // Another thread finished an outer call: it waits at its trampoline until this
+                // call returns.
+                Stop::Returned => {
+                    if self.kernel.threads.park(self.cpu.as_mut(), TRAMPOLINE) == kernel::threads::Switch::Deadlock {
+                        return Err(Error::Deadlock);
+                    }
+                }
                 Stop::Svc(0) => match self.kernel.syscall(self.cpu.as_mut())? {
                     Outcome::Continue => {}
                     Outcome::Exit(code) => return Err(Error::Exited(code)),
+                    Outcome::Deadlock => return Err(Error::Deadlock),
                 },
                 Stop::Svc(imm) if imm >= HOST_BASE => {
                     let index = (imm - HOST_BASE) as usize;
@@ -439,6 +463,7 @@ impl Emulator {
                     }
                 }
                 Stop::Svc(imm) => return Err(self.crash(StopKind::UnknownSvc(imm))),
+                Stop::Budget if remaining > 0 => self.kernel.preempt(self.cpu.as_mut()),
                 Stop::Budget => return Err(Error::Budget),
                 // An interrupt halts the JIT; the flag says whether this one was it. A halt left
                 // over from an interrupt already handled just resumes.

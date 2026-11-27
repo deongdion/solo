@@ -21,6 +21,13 @@ const A32_LR: i32 = RegisterARM::LR as i32;
 const A32_PC: i32 = RegisterARM::PC as i32;
 const A32_D0: i32 = RegisterARM::D0 as i32;
 const A32_CPSR: i32 = RegisterARM::CPSR as i32;
+const A32_FPSCR: i32 = RegisterARM::FPSCR as i32;
+const A64_NZCV: i32 = RegisterARM64::NZCV as i32;
+const A64_FPCR: i32 = RegisterARM64::FPCR as i32;
+const A64_FPSR: i32 = RegisterARM64::FPSR as i32;
+const A64_Q0: i32 = RegisterARM64::Q0 as i32;
+/// Not a register: reads 0, writes are ignored.
+const NONE: i32 = -1;
 const A32_FPEXC: i32 = RegisterARM::FPEXC as i32;
 const A32_C1_C0_2: i32 = RegisterARM::C1_C0_2 as i32;
 const A32_C13_C0_3: i32 = RegisterARM::C13_C0_3 as i32;
@@ -125,6 +132,17 @@ impl Unicorn {
         Ok(cpu)
     }
 
+    /// Where unicorn stopped; on A32 the low bit is set in Thumb state.
+    fn engine_pc(&self) -> u64 {
+        match self.arch {
+            Arch::Arm64 => self.uc.pc_read().unwrap_or(0),
+            Arch::Arm32 => {
+                let cpsr = self.uc.reg_read(A32_CPSR).unwrap_or(0);
+                self.uc.pc_read().unwrap_or(0) | ((cpsr >> 5) & 1)
+            }
+        }
+    }
+
     fn id(&self, reg: Reg) -> i32 {
         match (self.arch, reg) {
             (Arch::Arm64, Reg::General(n)) if n < 29 => A64_X0 + n as i32,
@@ -134,6 +152,14 @@ impl Unicorn {
             (Arch::Arm64, Reg::Pc) => A64_PC,
             (Arch::Arm64, Reg::Tls) => A64_TPIDR_EL0,
             (Arch::Arm64, Reg::Fp(n)) => A64_D0 + n as i32,
+            (Arch::Arm64, Reg::Flags) => A64_NZCV,
+            (Arch::Arm64, Reg::FpControl) => A64_FPCR,
+            (Arch::Arm64, Reg::FpStatus) => A64_FPSR,
+            // Read and written through Qn in reg and set_reg.
+            (Arch::Arm64, Reg::VecHigh(n)) => A64_Q0 + n as i32,
+            (Arch::Arm32, Reg::Flags) => A32_CPSR,
+            (Arch::Arm32, Reg::FpControl) => A32_FPSCR,
+            (Arch::Arm32, Reg::VecHigh(_) | Reg::FpStatus) => NONE,
             (Arch::Arm32, Reg::General(n)) => A32_R0 + n as i32,
             (Arch::Arm32, Reg::Sp) => A32_SP,
             (Arch::Arm32, Reg::Lr) => A32_LR,
@@ -158,12 +184,30 @@ impl Cpu for Unicorn {
     }
 
     fn reg(&self, reg: Reg) -> u64 {
-        self.uc.reg_read(self.id(reg)).unwrap_or(0)
+        let id = self.id(reg);
+        match reg {
+            _ if id == NONE => 0,
+            Reg::VecHigh(_) => self.uc.reg_read_long(id).map_or(0, |q| u64::from_le_bytes(q[8..16].try_into().expect("16 bytes"))),
+            _ => self.uc.reg_read(id).unwrap_or(0),
+        }
     }
 
     fn set_reg(&mut self, reg: Reg, value: u64) {
         let id = self.id(reg);
-        let _ = self.uc.reg_write(id, value);
+        match reg {
+            _ if id == NONE => {}
+            Reg::VecHigh(_) => {
+                if let Ok(q) = self.uc.reg_read_long(id) {
+                    let mut bytes = [0u8; 16];
+                    bytes[..8].copy_from_slice(&q[..8]);
+                    bytes[8..].copy_from_slice(&value.to_le_bytes());
+                    let _ = self.uc.reg_write_long(id, &bytes);
+                }
+            }
+            _ => {
+                let _ = self.uc.reg_write(id, value);
+            }
+        }
     }
 
     fn memory(&self) -> &Memory {
@@ -205,13 +249,7 @@ impl Cpu for Unicorn {
     }
 
     fn pc(&self) -> u64 {
-        match self.arch {
-            Arch::Arm64 => self.uc.pc_read().unwrap_or(0),
-            Arch::Arm32 => {
-                let cpsr = self.uc.reg_read(A32_CPSR).unwrap_or(0);
-                self.uc.pc_read().unwrap_or(0) | ((cpsr >> 5) & 1)
-            }
-        }
+        self.next
     }
 
     fn resume(&mut self, budget: u64) -> Result<Stop, Error> {
@@ -221,7 +259,7 @@ impl Cpu for Unicorn {
         let count = if budget == u64::MAX { 0 } else { budget as usize };
         let begin = self.next;
         let result = self.uc.emu_start(begin, 0, 0, count);
-        self.next = self.pc();
+        self.next = self.engine_pc();
         if let Some(stop) = self.uc.get_data_mut().stop.take() {
             return Ok(stop);
         }

@@ -337,12 +337,15 @@ uint64_t dyn_reg(const DynCpu* cpu, uint32_t index) {
         const auto& j = *cpu->jit64;
         if (index <= 30) return j.GetRegister(index);
         if (index >= 64 && index < 96) return j.GetVector(index - 64)[0];
+        if (index >= 96 && index < 128) return j.GetVector(index - 96)[1];
         switch (index) {
             case 31: return j.GetSP();
             case 32: return j.GetPC();
             case 33: return j.GetPstate();
             case 34: return cpu->cb64->tpidr_el0;
             case 35: return cpu->cb64->tpidrro_el0;
+            case 36: return j.GetFpcr();
+            case 37: return j.GetFpsr();
         }
         return 0;
     }
@@ -366,7 +369,14 @@ void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value) {
         auto& j = *cpu->jit64;
         if (index <= 30) { j.SetRegister(index, value); return; }
         if (index >= 64 && index < 96) { j.SetVector(index - 64, {value, 0}); return; }
+        if (index >= 96 && index < 128) {
+            const auto low = j.GetVector(index - 96)[0];
+            j.SetVector(index - 96, {low, value});
+            return;
+        }
         switch (index) {
+            case 36: j.SetFpcr(static_cast<uint32_t>(value)); break;
+            case 37: j.SetFpsr(static_cast<uint32_t>(value)); break;
             case 31: j.SetSP(value); break;
             case 32: j.SetPC(value); break;
             case 33: j.SetPstate(static_cast<uint32_t>(value)); break;
@@ -394,6 +404,11 @@ void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value) {
 void dyn_invalidate(DynCpu* cpu, uint64_t address, uint64_t length) {
     if (cpu->is64) cpu->jit64->InvalidateCacheRange(address, length);
     else cpu->jit32->InvalidateCacheRange(static_cast<uint32_t>(address), length);
+}
+
+void dyn_clear_exclusive(DynCpu* cpu) {
+    if (cpu->is64) cpu->jit64->ClearExclusiveState();
+    else cpu->jit32->ClearExclusiveState();
 }
 
 }  // extern "C"

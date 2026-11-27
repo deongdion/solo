@@ -36,7 +36,7 @@ impl Arch {
 }
 
 /// Architecture-neutral register names used by the call path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reg {
     /// Argument and general register `n` (x0..x30 on A64, r0..r12 on A32).
     General(u8),
@@ -48,6 +48,66 @@ pub enum Reg {
     /// 64-bit floating-point register `n`: the low half of Vn on A64, Dn on A32. Writing clears
     /// the upper half of Vn on A64.
     Fp(u8),
+    /// Upper 64 bits of Vn on A64 (0 and ignored on A32, whose Q registers are D pairs).
+    VecHigh(u8),
+    /// Condition flags and state: PSTATE (NZCV) on A64, CPSR on A32.
+    Flags,
+    /// FPCR on A64, FPSCR on A32.
+    FpControl,
+    /// FPSR on A64 (0 and ignored on A32, where FPSCR holds the status).
+    FpStatus,
+}
+
+/// The register state of one guest thread, for switching threads on one CPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Context {
+    regs: Vec<u64>,
+}
+
+fn context_regs(arch: Arch) -> Vec<Reg> {
+    let general = if arch == Arch::Arm64 { 30 } else { 13 };
+    let mut regs: Vec<Reg> = (0..general).map(Reg::General).collect();
+    regs.extend([Reg::Sp, Reg::Lr, Reg::Tls, Reg::Flags, Reg::FpControl, Reg::FpStatus]);
+    // Fp before VecHigh: writing Fp clears the upper half on A64.
+    regs.extend((0..32).map(Reg::Fp));
+    if arch == Arch::Arm64 {
+        regs.extend((0..32).map(Reg::VecHigh));
+    }
+    // PC last: on A32 setting the PC selects ARM or Thumb, which writing Flags must not undo.
+    regs.push(Reg::Pc);
+    regs
+}
+
+/// Saves every register a thread switch must preserve.
+pub fn save_context(cpu: &dyn Cpu) -> Context {
+    let regs = context_regs(cpu.arch());
+    Context { regs: regs.iter().map(|&r| if r == Reg::Pc { cpu.pc() } else { cpu.reg(r) }).collect() }
+}
+
+/// Loads a context saved by `save_context` on a CPU of the same architecture.
+pub fn load_context(cpu: &mut dyn Cpu, context: &Context) {
+    let regs = context_regs(cpu.arch());
+    debug_assert_eq!(regs.len(), context.regs.len());
+    cpu.clear_exclusive();
+    for (r, &v) in regs.into_iter().zip(&context.regs) {
+        if r == Reg::Pc {
+            cpu.set_pc(v);
+        } else {
+            cpu.set_reg(r, v);
+        }
+    }
+}
+
+impl Context {
+    pub fn get(&self, arch: Arch, reg: Reg) -> Option<u64> {
+        context_regs(arch).iter().position(|&r| r == reg).map(|i| self.regs[i])
+    }
+
+    pub fn set(&mut self, arch: Arch, reg: Reg, value: u64) {
+        if let Some(i) = context_regs(arch).iter().position(|&r| r == reg) {
+            self.regs[i] = value;
+        }
+    }
 }
 
 /// Why a run returned.
@@ -137,6 +197,8 @@ pub trait Cpu: Send {
     fn executed(&self) -> u64;
     /// Discards translated code for a range after the guest code there was rewritten.
     fn invalidate(&mut self, address: u64, length: u64);
+    /// Clears the exclusive monitor (LDREX/LDXR reservations), as a thread switch must.
+    fn clear_exclusive(&mut self) {}
     /// The handle that interrupts this CPU from another thread.
     fn interrupt(&self) -> Interrupt;
     /// A new CPU of the same kind and options with a copy of this one's memory and registers.
@@ -220,12 +282,44 @@ pub fn restore_state(to: &mut dyn Cpu, from: &dyn Cpu) -> Result<(), Error> {
 /// Guest address of the return trampoline page.
 pub const TRAMPOLINE: u64 = 0xffff_0000;
 
-/// Machine code for the return trampoline.
+/// Contents of the return trampoline page.
+///
+/// On A32 the page is also Linux's vector page, so it carries the kernel user helpers at their
+/// fixed addresses (Documentation/arch/arm/kernel_user_helpers.rst), which bionic's 32-bit
+/// pthread code calls.
 pub fn trampoline_code(arch: Arch) -> Vec<u8> {
     match arch {
         // svc #RETURN_SVC
         Arch::Arm64 => (0xd400_0001u32 | (RETURN_SVC << 5)).to_le_bytes().to_vec(),
-        // svc #RETURN_SVC (A32 encoding); callers return here in ARM state.
-        Arch::Arm32 => (0xef00_0000u32 | RETURN_SVC).to_le_bytes().to_vec(),
+        Arch::Arm32 => {
+            let mut page = vec![0u8; machine::PAGE_SIZE as usize];
+            let mut put = |offset: usize, words: &[u32]| {
+                for (i, w) in words.iter().enumerate() {
+                    page[offset + i * 4..offset + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+                }
+            };
+            // svc #RETURN_SVC (A32 encoding); callers return here in ARM state.
+            put(0, &[0xef00_0000 | RETURN_SVC]);
+            // 0xffff0fa0 __kuser_memory_barrier: dmb ish; bx lr
+            put(0xfa0, &[0xf57f_f05b, 0xe12f_ff1e]);
+            // 0xffff0fc0 __kuser_cmpxchg(oldval r0, newval r1, ptr r2): r0 = 0 and C set on success.
+            put(
+                0xfc0,
+                &[
+                    0xe192_3f9f, // 1: ldrex r3, [r2]
+                    0xe053_3000, //    subs r3, r3, r0
+                    0x0182_3f91, //    strexeq r3, r1, [r2]
+                    0x0333_0001, //    teqeq r3, #1
+                    0x0aff_fffa, //    beq 1b
+                    0xe273_0000, //    rsbs r0, r3, #0
+                    0xe12f_ff1e, //    bx lr
+                ],
+            );
+            // 0xffff0fe0 __kuser_get_tls: mrc p15, 0, r0, c13, c0, 3; bx lr
+            put(0xfe0, &[0xee1d_0f70, 0xe12f_ff1e]);
+            // 0xffff0ffc __kuser_helper_version: the helpers above (version 3 adds get_tls).
+            put(0xffc, &[3]);
+            page
+        }
     }
 }

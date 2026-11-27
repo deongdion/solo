@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 LLVM="${LLVM:-/c/Program Files/LLVM/bin}"
 JDK_INCLUDE="${JDK_INCLUDE:-/c/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot/include}"
 # armv7 bionic also exports the EABI helpers the compiler calls for 64-bit conversions.
-LIBC="vsnprintf strlen __aeabi_l2d"
+LIBC="vsnprintf strlen __aeabi_l2d pthread_create pthread_join pthread_mutex_lock pthread_mutex_unlock pthread_cond_wait pthread_cond_broadcast sched_yield"
 build() {
     local out=$1 target=$2; shift 2
     local stubs symbol

@@ -57,5 +57,24 @@ parameters. `MapRun.java` passes a `HashMap` of ten strings under unidbg (arm64,
 The Rust runtime produces `expected_map.txt` on both architectures with no handler code: the
 built-in models (`java` crate) answer the calls, and HashMap iterates in OpenJDK's order.
 
+## Threads (PLAN.md M3)
+
+`Java_fix_Native_threads(n, rounds, parts)` runs, by bit of `parts`: (1) `n` pthreads adding to a
+counter under a mutex `rounds` times each, then joined; (2) two threads alternating `rounds` times
+each through a condition variable; (3, bit 4) a thread that spins until the caller sets a flag,
+while the caller spins until the thread sets another, which completes only if the scheduler
+preempts a spinning thread. `ThreadRun.java` runs it under unidbg (dynarmic, thread dispatcher
+enabled; without the dispatcher even part 1 never returns), `n = 4`, `rounds = 1000`, 120 s limit:
+
+| parts | unidbg arm64 | unidbg armv7 | Rust runtime (both, dynarmic and unicorn) |
+|---|---|---|---|
+| 1 | `counter 10000 joined 100;` | same | same |
+| 2 | no result within 120 s | no result within 120 s | `pings 2000 turn 0;` |
+| 4 | no result within 120 s | no result within 120 s | `spun 7;` |
+| 7 | no result within 120 s | no result within 120 s | `counter 10000 joined 100; pings 2000 turn 0; spun 7;` |
+
+The runtime's interleaving is deterministic: two runs make the same number of thread switches
+(`runtime/tests/threads.rs`).
+
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).

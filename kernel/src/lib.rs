@@ -5,6 +5,7 @@
 //! never turns a guest mistake into a host exception (see PLAN.md F12).
 
 pub mod numbers;
+pub mod threads;
 pub mod vfs;
 
 use std::collections::{BTreeMap, HashMap};
@@ -66,6 +67,8 @@ pub enum Outcome {
     Continue,
     /// The process exited.
     Exit(i32),
+    /// Every guest thread waits and none can time out.
+    Deadlock,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +137,10 @@ pub struct Kernel {
     random: u64,
     sigactions: HashMap<u64, Vec<u8>>,
     cwd: String,
+    pub threads: threads::Threads,
+    /// Set by a syscall that switched threads: the result register belongs to another thread.
+    switched: bool,
+    deadlock: bool,
 }
 
 impl Kernel {
@@ -141,6 +148,7 @@ impl Kernel {
         let random = config.random_seed.unwrap_or_else(|| {
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
         }) | 1;
+        let pid = config.pid;
         let mut fds = BTreeMap::new();
         fds.insert(0, Target::Stdin);
         fds.insert(1, Target::Stdout);
@@ -160,6 +168,9 @@ impl Kernel {
             random,
             sigactions: HashMap::new(),
             cwd: "/".into(),
+            threads: threads::Threads::new(pid),
+            switched: false,
+            deadlock: false,
         }
     }
 
@@ -192,10 +203,21 @@ impl Kernel {
             Arch::Arm64 => numbers::arm64(number),
             Arch::Arm32 => numbers::arm32(number),
         };
+        self.switched = false;
+        self.deadlock = false;
         let result = match sys {
             Some(sys) => self.dispatch(cpu, sys, &args)?,
             None => Err(ENOSYS),
         };
+        if self.deadlock {
+            return Ok(Outcome::Deadlock);
+        }
+        if self.switched {
+            if self.config.trace_syscalls {
+                eprintln!("[syscall] {sys:?} switched to thread {}", self.threads.current);
+            }
+            return Ok(Outcome::Continue);
+        }
         let result = match result {
             Ok(Some(value)) => value,
             Ok(None) => return Ok(Outcome::Exit(args[0] as i32)),
@@ -222,6 +244,27 @@ impl Kernel {
         };
         cpu.set_reg(Reg::General(0), value);
         Ok(Outcome::Continue)
+    }
+
+    fn after_switch(&mut self, switch: threads::Switch) {
+        match switch {
+            threads::Switch::Stay => self.switched = true,
+            threads::Switch::Switched => self.switched = true,
+            threads::Switch::Deadlock => self.deadlock = true,
+        }
+    }
+
+    /// Gives the CPU to another runnable thread after an instruction slice.
+    pub fn preempt(&mut self, cpu: &mut dyn Cpu) {
+        if self.threads.count() > 1 {
+            self.threads.yield_now(cpu);
+        }
+    }
+
+    /// Calls from the host run on the main thread.
+    pub fn begin_call(&mut self, cpu: &mut dyn Cpu) {
+        let main = self.threads.main;
+        self.threads.run(cpu, main);
     }
 
     fn is64(cpu: &dyn Cpu) -> bool {
@@ -268,10 +311,34 @@ impl Kernel {
         let is64 = Self::is64(cpu);
         let sa: [i64; 7] = a.map(|v| if is64 { v as i64 } else { v as u32 as i32 as i64 });
         match sys {
-            Sys::Getpid | Sys::Gettid => ok(self.config.pid as i64),
+            Sys::Getpid => ok(self.config.pid as i64),
+            Sys::Gettid => ok(self.threads.current as i64),
             Sys::Getppid => ok(1),
             Sys::Getuid | Sys::Geteuid | Sys::Getgid | Sys::Getegid => ok(self.config.uid as i64),
-            Sys::SetTidAddress => ok(self.config.pid as i64),
+            Sys::SetTidAddress => {
+                self.threads.set_clear_tid(a[0]);
+                ok(self.threads.current as i64)
+            }
+            Sys::Clone => {
+                let flags = a[0];
+                if flags & threads::CLONE_THREAD == 0 || flags & threads::CLONE_VM == 0 {
+                    // A new process: not emulated.
+                    return Ok(Err(EAGAIN));
+                }
+                let tid = self.threads.spawn(cpu, flags, a[1], a[2], a[3], a[4])?;
+                ok(tid as i64)
+            }
+            Sys::SchedYield | Sys::Nanosleep if self.threads.count() > 1 => {
+                cpu.set_reg(Reg::General(0), 0);
+                let switch = self.threads.yield_now(cpu);
+                self.after_switch(switch);
+                ok(0)
+            }
+            Sys::Exit if self.threads.current != self.threads.main => {
+                let switch = self.threads.exit(cpu)?;
+                self.after_switch(switch);
+                ok(0)
+            }
             Sys::SetRobustList | Sys::RtSigprocmask | Sys::Sigaltstack | Sys::SchedYield | Sys::Setpriority | Sys::Msync
             | Sys::Fsync | Sys::ArmCacheflush | Sys::Setrlimit => ok(0),
             Sys::Getpriority => ok(20),
@@ -372,13 +439,32 @@ impl Kernel {
             Sys::Nanosleep => ok(0),
             Sys::Futex => {
                 let op = a[1] & 0x7f;
+                let bitset = if op == 9 || op == 10 { a[5] as u32 } else { u32::MAX };
                 match op {
-                    // FUTEX_WAIT: a single guest thread can never be woken.
                     0 | 9 => {
                         let current = cpu.memory().read_u32(a[0])?;
-                        if current != a[2] as u32 { Ok(Err(EAGAIN)) } else { Ok(Err(ETIMEDOUT)) }
+                        if current != a[2] as u32 {
+                            return Ok(Err(EAGAIN));
+                        }
+                        // A single guest thread can never be woken.
+                        if self.threads.count() == 1 {
+                            return Ok(Err(ETIMEDOUT));
+                        }
+                        let timed = a[3] != 0;
+                        let switch = self.threads.wait(cpu, a[0], bitset, timed);
+                        self.after_switch(switch);
+                        ok(0)
                     }
-                    1 | 10 => ok(0),
+                    1 | 10 => ok(self.threads.wake(cpu, a[0], bitset, a[2]) as i64),
+                    // FUTEX_REQUEUE and FUTEX_CMP_REQUEUE: wake `a[2]`, move up to `a[3]` to `a[4]`.
+                    3 | 4 => {
+                        if op == 4 && cpu.memory().read_u32(a[0])? != a[5] as u32 {
+                            return Ok(Err(EAGAIN));
+                        }
+                        let woken = self.threads.wake(cpu, a[0], u32::MAX, a[2]);
+                        let moved = self.threads.requeue(a[0], a[4], a[3]);
+                        ok((woken + if op == 4 { moved } else { 0 }) as i64)
+                    }
                     _ => Ok(Err(ENOSYS)),
                 }
             }

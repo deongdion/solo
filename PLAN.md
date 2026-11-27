@@ -184,6 +184,8 @@ Built-in models (`java` crate, installed by default after the embedder's handler
 
 Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-model commit measures aesCbc16 p50 9.8-9.9 µs here vs 5.4-5.6 µs then), so only same-session numbers are compared.
 
+- Threads: `clone` with `CLONE_THREAD`, `futex` wait/wake/requeue with bitsets, thread `exit` with `CLONE_CHILD_CLEARTID`, `gettid`, `set_tid_address`, `sched_yield`; one CPU, round-robin in tid order, a running thread is preempted after 200,000 instructions when another can run; time passes only when every thread waits (the earliest timed waiter times out), so runs are reproducible. Contexts include NZCV/CPSR, FPCR/FPSR/FPSCR and full 128-bit vectors; the exclusive monitor is cleared on a switch. A thread that reaches the return trampoline of an outer host call while a nested one runs waits there until its level is innermost. armv7 gets Linux's kernel user helpers (memory barrier, cmpxchg, get_tls) in the vector page, which bionic's pthread code calls. `bench/jni` Native.threads: unidbg completes only the mutex part, the condition-variable and preemption parts never return within 120 s; the runtime returns all three on both architectures and backends (bench/jni/README.md). Single-thread latency with thread support, same session, six runs each: aesCbc16 p50 median 6.3 vs 6.35 µs, pbkdf2 median 3363 vs 3492 µs, overlapping ranges (no measurable change).
+
 Next: M3 signals; 24 h RSS soak.
 
 ## Build

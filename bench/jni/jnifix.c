@@ -213,3 +213,90 @@ JNIEXPORT jint JNICALL Java_fix_Native_spin(JNIEnv* env, jclass self, jint round
     for (jint i = 0; rounds < 0 || i < rounds; i++) acc += i;
     return acc;
 }
+
+// Threads: workers adding under a mutex, two threads alternating through a condition variable,
+// and a thread that only spins, which runs only if the scheduler preempts the spinning caller.
+#include <pthread.h>
+
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t turn_changed = PTHREAD_COND_INITIALIZER;
+static int counter, turn, pings, rounds_each;
+static volatile int go, done;
+
+struct work { int add, rounds; };
+
+static void* adder(void* p) {
+    struct work* w = (struct work*)p;
+    for (int i = 0; i < w->rounds; i++) {
+        pthread_mutex_lock(&lock);
+        counter += w->add;
+        pthread_mutex_unlock(&lock);
+    }
+    return (void*)(long)(w->add * 10);
+}
+
+static void* player(void* p) {
+    int me = (int)(long)p;
+    for (int i = 0; i < rounds_each; i++) {
+        pthread_mutex_lock(&lock);
+        while (turn != me) pthread_cond_wait(&turn_changed, &lock);
+        pings++;
+        turn = 1 - me;
+        pthread_cond_broadcast(&turn_changed);
+        pthread_mutex_unlock(&lock);
+    }
+    return 0;
+}
+
+static void* spinner(void* p) {
+    while (!go) {}
+    done = 1;
+    return p;
+}
+
+// parts: 1 adders, 2 ping-pong, 4 spinner.
+JNIEXPORT jstring JNICALL Java_fix_Native_threads(JNIEnv* env, jclass self, jint n, jint rounds, jint parts) {
+    used = 0;
+    if (parts & 1) {
+        counter = 0;
+        pthread_t threads[8];
+        struct work work[8];
+        long joined = 0;
+        if (n > 8) n = 8;
+        for (int i = 0; i < n; i++) {
+            work[i].add = i + 1;
+            work[i].rounds = rounds;
+            if (pthread_create(&threads[i], 0, adder, &work[i]) != 0) return (*env)->NewStringUTF(env, "create failed");
+        }
+        for (int i = 0; i < n; i++) {
+            void* r = 0;
+            pthread_join(threads[i], &r);
+            joined += (long)r;
+        }
+        say("counter %d joined %ld;", counter, joined);
+    }
+    if (parts & 2) {
+        turn = 0;
+        pings = 0;
+        rounds_each = rounds;
+        pthread_t a, b;
+        pthread_create(&a, 0, player, (void*)0L);
+        pthread_create(&b, 0, player, (void*)1L);
+        pthread_join(a, 0);
+        pthread_join(b, 0);
+        say(" pings %d turn %d;", pings, turn);
+    }
+    if (parts & 4) {
+        go = 0;
+        done = 0;
+        pthread_t s;
+        pthread_create(&s, 0, spinner, (void*)7L);
+        go = 1;
+        while (!done) {}
+        void* r = 0;
+        pthread_join(s, &r);
+        say(" spun %ld;", (long)r);
+    }
+    say("\n");
+    return (*env)->NewStringUTF(env, out);
+}

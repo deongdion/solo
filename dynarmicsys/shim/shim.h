@@ -51,6 +51,8 @@ uint64_t dyn_reg(const DynCpu* cpu, uint32_t index);
 void dyn_set_reg(DynCpu* cpu, uint32_t index, uint64_t value);
 
 void dyn_invalidate(DynCpu* cpu, uint64_t address, uint64_t length);
+// Clears the exclusive monitor, as a context switch does (clrex).
+void dyn_clear_exclusive(DynCpu* cpu);
 
 #ifdef __cplusplus
 }

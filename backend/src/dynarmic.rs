@@ -144,12 +144,20 @@ impl Dynarmic {
             (Arch::Arm64, Reg::Pc) => 32,
             (Arch::Arm64, Reg::Tls) => 34,
             (Arch::Arm64, Reg::Fp(n)) => 64 + n as u32,
+            (Arch::Arm64, Reg::VecHigh(n)) => 96 + n as u32,
+            (Arch::Arm64, Reg::Flags) => 33,
+            (Arch::Arm64, Reg::FpControl) => 36,
+            (Arch::Arm64, Reg::FpStatus) => 37,
             (Arch::Arm32, Reg::General(n)) => n as u32,
             (Arch::Arm32, Reg::Sp) => 13,
             (Arch::Arm32, Reg::Lr) => 14,
             (Arch::Arm32, Reg::Pc) => 15,
             (Arch::Arm32, Reg::Tls) => 18,
             (Arch::Arm32, Reg::Fp(n)) => 64 + n as u32,
+            (Arch::Arm32, Reg::Flags) => 16,
+            (Arch::Arm32, Reg::FpControl) => 17,
+            // No such register: the shim reads 0 and ignores writes.
+            (Arch::Arm32, Reg::VecHigh(_) | Reg::FpStatus) => 1000,
         }
     }
 }
@@ -264,6 +272,11 @@ impl Cpu for Dynarmic {
         let mut copy = Dynarmic::with_options(self.arch, self.code_cache, self.precise_faults)?;
         crate::copy_state(self, &mut copy)?;
         Ok(Box::new(copy))
+    }
+
+    fn clear_exclusive(&mut self) {
+        // SAFETY: valid handle.
+        unsafe { sys::dyn_clear_exclusive(self.cpu.0) }
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {
