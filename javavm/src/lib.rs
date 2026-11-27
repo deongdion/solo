@@ -226,6 +226,8 @@ pub struct Vm {
     pub java_vm: u64,
     /// Return address of the native code that made the current JNI call.
     pub caller: u64,
+    /// The process clock, shared with the kernel by the runtime (`System.currentTimeMillis`).
+    pub clock: device::Clock,
 }
 
 impl Vm {
@@ -260,6 +262,7 @@ impl Vm {
             env: self.env,
             java_vm: self.java_vm,
             caller: self.caller,
+            clock: self.clock.clone(),
         })
     }
 
@@ -287,6 +290,7 @@ impl Vm {
             env: 0,
             java_vm: 0,
             caller: 0,
+            clock: device::Clock::default(),
         };
         // java/lang/Class must exist before any Class object can be made.
         let class_class = ClassId(0);

@@ -101,6 +101,11 @@ pub struct Config {
     pub echo_output: bool,
     /// Seed for getrandom and AT_RANDOM; None uses host time.
     pub random_seed: Option<u64>,
+    /// Source of every clock (PLAN.md F19); `ClockMode::Fixed` with `random_seed` makes runs
+    /// repeatable.
+    pub clock: device::ClockMode,
+    /// Monotonic time (time since boot) when the process starts.
+    pub uptime_ns: u64,
 }
 
 impl Default for Config {
@@ -114,6 +119,8 @@ impl Default for Config {
             trace_syscalls: false,
             echo_output: true,
             random_seed: None,
+            clock: device::ClockMode::Host,
+            uptime_ns: device::clock::DEFAULT_UPTIME_NS,
         }
     }
 }
@@ -139,6 +146,8 @@ pub struct Kernel {
     mmap_low: u64,
     mmap_high: u64,
     random: u64,
+    /// Shared with the Java side (`Vm::clock`) by the runtime.
+    pub clock: device::Clock,
     pub signals: signals::Signals,
     cwd: String,
     pub threads: threads::Threads,
@@ -154,6 +163,7 @@ impl Kernel {
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
         }) | 1;
         let pid = config.pid;
+        let clock = device::Clock::new(config.clock, config.uptime_ns);
         let mut fds = BTreeMap::new();
         fds.insert(0, Target::Stdin);
         fds.insert(1, Target::Stdout);
@@ -171,6 +181,7 @@ impl Kernel {
             mmap_low,
             mmap_high,
             random,
+            clock,
             signals: signals::Signals::new(backend::TRAMPOLINE + backend::SIGRETURN_STUB_OFFSET),
             cwd: "/".into(),
             threads: threads::Threads::new(pid),
@@ -613,15 +624,16 @@ impl Kernel {
                 ok(if is64 { 8 } else { 4 })
             }
             Sys::ClockGettime | Sys::Gettimeofday => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                let (secs, sub) = if sys == Sys::ClockGettime {
-                    (now.as_secs(), now.subsec_nanos() as u64)
+                let (ns, out) = if sys == Sys::ClockGettime {
+                    let Some(ns) = self.clock.by_id(a[0] as u32) else { return Ok(Err(EINVAL)) };
+                    (ns, a[1])
                 } else {
-                    (now.as_secs(), now.subsec_micros() as u64)
+                    (self.clock.realtime_ns(), a[0])
                 };
-                let out = if sys == Sys::ClockGettime { a[1] } else { a[0] };
+                let sub = ns % 1_000_000_000;
+                let sub = if sys == Sys::ClockGettime { sub } else { sub / 1000 };
                 if out != 0 {
-                    self.write_pair(cpu, out, secs, sub)?;
+                    self.write_pair(cpu, out, ns / 1_000_000_000, sub)?;
                 }
                 ok(0)
             }
@@ -1111,7 +1123,7 @@ impl Kernel {
     }
 
     fn write_stat(&self, cpu: &mut dyn Cpu, out: u64, mode: u32, size: u64) -> Result<(), Error> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let now = self.clock.realtime_ns() / 1_000_000_000;
         let mut b = Vec::new();
         if Self::is64(cpu) {
             // struct stat (AArch64, 128 bytes)

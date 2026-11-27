@@ -25,6 +25,7 @@ use linker::{Linker, Resolver};
 use machine::Perms;
 
 pub use debug::{DebugEvent, Debugger, Resume};
+pub use device::{Clock, ClockMode};
 pub use gdb::GdbStub;
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
@@ -239,6 +240,7 @@ impl Emulator {
             debug: debug::Debug::default(),
             unpack: unpack::Unpack::default(),
         };
+        emulator.vm.clock = emulator.kernel.clock.clone();
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
         if options.java_models {
@@ -259,11 +261,14 @@ impl Emulator {
         if self.depth != 0 {
             return Err(Error::Backend(backend::Error::Backend("fork during a call".into())));
         }
-        let vm = self.vm.fork().map_err(|error| Error::Jni { error, caller: String::new() })?;
+        let mut vm = self.vm.fork().map_err(|error| Error::Jni { error, caller: String::new() })?;
+        let mut kernel = self.kernel.clone();
+        kernel.clock = self.kernel.clock.detach();
+        vm.clock = kernel.clock.clone();
         Ok(Emulator {
             cpu: self.cpu.fork()?,
             linker: self.linker.clone(),
-            kernel: self.kernel.clone(),
+            kernel,
             resolver: self.resolver.clone(),
             host: self.host.clone(),
             vm,
@@ -292,6 +297,8 @@ impl Emulator {
         self.cpu.restore(&*template.cpu)?;
         self.linker = template.linker.clone();
         self.kernel = template.kernel.clone();
+        self.kernel.clock = template.kernel.clock.detach();
+        self.vm.clock = self.kernel.clock.clone();
         self.resolver = template.resolver.clone();
         self.host = template.host.clone();
         self.collect_at = template.collect_at;

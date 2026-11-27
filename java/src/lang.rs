@@ -559,13 +559,8 @@ pub(crate) fn static_call(vm: &mut Vm, call: &Call, key: &str) -> JResult<Option
         }
         ("java/lang/Integer", "toHexString(I)Ljava/lang/String;") => new_string(vm, &format!("{:x}", a[0].as_i32() as u32)),
         ("java/lang/Long", "toHexString(J)Ljava/lang/String;") => new_string(vm, &format!("{:x}", a[0].as_i64() as u64)),
-        ("java/lang/System", "currentTimeMillis()J") => Value::Long(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
-        ),
-        ("java/lang/System", "nanoTime()J") => {
-            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            Value::Long(START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as i64)
-        }
+        ("java/lang/System", "currentTimeMillis()J") => Value::Long((vm.clock.realtime_ns() / 1_000_000) as i64),
+        ("java/lang/System", "nanoTime()J") => Value::Long(vm.clock.monotonic_ns() as i64),
         ("java/lang/System", "identityHashCode(Ljava/lang/Object;)I") => Value::Int(a[0].object().map_or(0, identity_hash)),
         ("java/nio/charset/Charset", "forName(Ljava/lang/String;)Ljava/nio/charset/Charset;") => {
             let name = text(vm, 0).ok_or_else(|| throw(vm, "java/lang/IllegalArgumentException", "null charset name"))?;

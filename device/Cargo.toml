@@ -6,4 +6,3 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-kernel.workspace = true

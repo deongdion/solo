@@ -1,1 +1,6 @@
-//! Device profile: system properties, packages, certificates, rootfs per API level, APK metadata.
+//! Device profile: system properties, packages, certificates, rootfs per API level, APK metadata,
+//! and the clock every time source of the emulated process reads.
+
+pub mod clock;
+
+pub use clock::{Clock, ClockMode};

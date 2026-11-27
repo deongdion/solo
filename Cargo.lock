@@ -150,7 +150,6 @@ dependencies = [
 name = "device"
 version = "0.0.1"
 dependencies = [
- "kernel",
  "thiserror",
 ]
 
@@ -237,6 +236,7 @@ dependencies = [
 name = "java"
 version = "0.0.1"
 dependencies = [
+ "device",
  "javavm",
  "thiserror",
 ]
@@ -246,6 +246,7 @@ name = "javavm"
 version = "0.0.1"
 dependencies = [
  "backend",
+ "device",
  "machine",
  "thiserror",
 ]
@@ -255,6 +256,7 @@ name = "kernel"
 version = "0.0.1"
 dependencies = [
  "backend",
+ "device",
  "machine",
  "thiserror",
 ]

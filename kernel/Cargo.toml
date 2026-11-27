@@ -8,3 +8,4 @@ publish.workspace = true
 thiserror.workspace = true
 machine.workspace = true
 backend.workspace = true
+device.workspace = true
