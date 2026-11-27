@@ -9,3 +9,5 @@ thiserror.workspace = true
 machine.workspace = true
 backend.workspace = true
 memchr.workspace = true
+yaxpeax-arm = "0.5"
+yaxpeax-arch = "0.3"

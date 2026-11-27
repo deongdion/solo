@@ -12,6 +12,7 @@ mod host;
 mod jni;
 pub mod pool;
 pub mod report;
+mod tracing;
 
 use std::path::PathBuf;
 
@@ -21,6 +22,7 @@ use linker::{Linker, Resolver};
 use machine::Perms;
 
 pub use hooks::{Call, Flow, Hook, HookId};
+pub use inspect::trace::{Executed, Trace, TraceConfig};
 pub use host::HostFunction;
 pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
 pub use jni::OnLoadEvent;
@@ -181,6 +183,8 @@ pub struct Emulator {
     budget: u64,
     depth: u32,
     pub(crate) hooks: hooks::Hooks,
+    /// Instruction trace while one runs (not copied by fork).
+    pub(crate) trace: Option<inspect::trace::Trace>,
 }
 
 impl Emulator {
@@ -211,6 +215,7 @@ impl Emulator {
             budget: options.budget,
             depth: 0,
             hooks: hooks::Hooks::default(),
+            trace: None,
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -245,6 +250,7 @@ impl Emulator {
             budget: self.budget,
             depth: 0,
             hooks: self.hooks.clone(),
+            trace: None,
         })
     }
 
@@ -445,8 +451,13 @@ impl Emulator {
             let stop = match next.take() {
                 Some(stop) => stop,
                 None => {
-                    let stop = self.cpu.resume(slice)?;
-                    remaining = remaining.saturating_sub(self.cpu.executed());
+                    let (stop, executed) = if self.trace.is_some() {
+                        self.traced_resume(slice)?
+                    } else {
+                        let stop = self.cpu.resume(slice)?;
+                        (stop, self.cpu.executed())
+                    };
+                    remaining = remaining.saturating_sub(executed);
                     if remaining == 0 && stop != Stop::Returned {
                         return Err(Error::Budget);
                     }
