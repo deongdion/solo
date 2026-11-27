@@ -3,10 +3,15 @@
 //! 1000 iterations. Output hashes are the first 16 hex digits of SHA-256, as Baseline prints them,
 //! so results compare line by line with bench/baseline/results.txt.
 //!
-//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|fork|throughput <instances> <seconds>|pool|poolfork <workers> <seconds>]
+//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|fork|throughput <instances> <seconds>|pool|poolfork <workers> <seconds>|soak <workers> <seconds>]
 //!
 //! `throughput` runs one instance per thread directly; `pool` runs the same call as jobs of a
 //! `runtime::Pool` (with its per-job deadline) fed by two client threads per worker.
+//!
+//! `soak` runs for hours and prints one line a minute: process memory (working set and private
+//! bytes), pool counters, and a worker's guest memory and live Java objects. Workers are never
+//! recycled, so growth inside one instance shows; another thread forks once and then restores the
+//! same instance from the template over and over. Every result is checked against the first.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -73,6 +78,144 @@ impl Bench {
     }
 }
 
+fn pbkdf2(emu: &mut Emulator, iterations: i32) -> Vec<u8> {
+    let vm = &mut emu.vm;
+    let password = vm.new_bytes(b"123456");
+    let salt = vm.new_bytes(&[0; 8]);
+    let dst = vm.new_bytes(&[0; 64]);
+    let args = [Value::Object(password), Value::Object(salt), Value::Object(dst), Value::Int(iterations)];
+    emu.call_static(UTILITIES, "pbkdf2", "([B[B[BI)V", &args).unwrap_or_else(|e| panic!("pbkdf2: {e}"));
+    emu.vm.bytes(dst).unwrap()
+}
+
+/// (working set, private bytes) of this process in KiB; zeros where not supported.
+#[cfg(windows)]
+fn process_memory_kb() -> (u64, u64) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota_peak_paged_pool: usize,
+        quota_paged_pool: usize,
+        quota_peak_non_paged_pool: usize,
+        quota_non_paged_pool: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+    }
+    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+    // SAFETY: the pseudo handle needs no closing; the struct matches PROCESS_MEMORY_COUNTERS.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    if ok == 0 { (0, 0) } else { (c.working_set as u64 / 1024, c.pagefile_usage as u64 / 1024) }
+}
+
+#[cfg(not(windows))]
+fn process_memory_kb() -> (u64, u64) {
+    // /proc/self/statm: size resident shared text lib data dirty, in pages.
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages: Vec<u64> = statm.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    if pages.len() < 6 { (0, 0) } else { (pages[1] * 4, pages[5] * 4) }
+}
+
+fn soak(arch: Arch, backend: BackendKind, workers: usize, seconds: u64) {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let started = Instant::now();
+    let mut template = build(arch, backend);
+    let aes_ref = aes(&mut template);
+    let pbkdf2_ref = pbkdf2(&mut template, 100);
+    let config = runtime::PoolConfig { workers, queue_limit: workers * 4, recycle_after_jobs: 0, recycle_above_committed: 0, ..runtime::PoolConfig::default() };
+    let pool = Arc::new(runtime::Pool::forking(config, template.fork().expect("fork")).expect("pool"));
+    println!("soak arch={arch:?} workers={workers} seconds={seconds} init_ms={:.0} aes={} pbkdf2_100={}", started.elapsed().as_secs_f64() * 1000.0, sha(&aes_ref), sha(&pbkdf2_ref));
+    let stop = Arc::new(AtomicBool::new(false));
+    let mismatches = Arc::new(AtomicU64::new(0));
+    let restores = Arc::new(AtomicU64::new(0));
+    let mut threads = Vec::new();
+    for _ in 0..workers * 2 {
+        let (pool, stop, mismatches) = (pool.clone(), stop.clone(), mismatches.clone());
+        let (aes_ref, pbkdf2_ref) = (aes_ref.clone(), pbkdf2_ref.clone());
+        threads.push(std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                n += 1;
+                let heavy = n.is_multiple_of(500);
+                match pool.run(move |emu| Ok(if heavy { pbkdf2(emu, 100) } else { aes(emu) })) {
+                    Ok(out) => {
+                        if &out != if heavy { &pbkdf2_ref } else { &aes_ref } {
+                            mismatches.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(runtime::PoolError::Full) => std::thread::yield_now(),
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        }));
+    }
+    {
+        // Restore cycles: one instance reset from the template after every 1000 calls.
+        let (stop, mismatches, restores) = (stop.clone(), mismatches.clone(), restores.clone());
+        let aes_ref = aes_ref.clone();
+        threads.push(std::thread::spawn(move || {
+            let mut emu = template.fork().expect("fork");
+            while !stop.load(Ordering::Relaxed) {
+                for _ in 0..1000 {
+                    if aes(&mut emu) != aes_ref {
+                        mismatches.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                emu.restore(&template).expect("restore");
+                restores.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+    let deadline = started + Duration::from_secs(seconds);
+    let mut last_jobs = 0;
+    let mut next = Instant::now();
+    loop {
+        next += Duration::from_secs(60);
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        }
+        let (working_set, private) = process_memory_kb();
+        let stats = pool.stats();
+        let guest = pool.run(|emu| Ok((emu.cpu.memory().committed() / 1024, emu.vm.heap.live())));
+        let (guest_kb, objects) = guest.unwrap_or((0, 0));
+        println!(
+            "t_s={} working_set_kb={working_set} private_kb={private} jobs={} jobs_per_s={:.0} failed={} timeouts={} panics={} builds={} restores={} mismatches={} worker_guest_kb={guest_kb} worker_java_objects={objects}",
+            started.elapsed().as_secs(),
+            stats.jobs,
+            (stats.jobs - last_jobs) as f64 / 60.0,
+            stats.failed,
+            stats.timeouts,
+            stats.panics,
+            stats.builds,
+            restores.load(Ordering::Relaxed),
+            mismatches.load(Ordering::Relaxed),
+        );
+        last_jobs = stats.jobs;
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for t in threads {
+        t.join().expect("soak thread");
+    }
+    if let Ok(mut pool) = Arc::try_unwrap(pool) {
+        pool.shutdown();
+    }
+}
+
 fn sha(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
@@ -135,6 +278,12 @@ fn main() {
         }
         println!("forked aesCbc16 {} out={} first_out={}", stats(latencies), sha(&out), sha(&first));
         println!("guest_committed_kb={}", copy.cpu.memory().committed() / 1024);
+        return;
+    }
+    if mode == "soak" {
+        let workers: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(4);
+        let seconds: u64 = args.get(5).and_then(|a| a.parse().ok()).unwrap_or(86_400);
+        soak(arch, backend, workers, seconds);
         return;
     }
     if mode == "pool" || mode == "poolfork" {
