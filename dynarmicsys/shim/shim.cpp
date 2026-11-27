@@ -76,6 +76,17 @@ struct Common {
         }
     }
 
+    // A null result makes dynarmic raise NoExecuteFault when the block is reached, so a jump into
+    // data faults instead of translating an unbounded run of non-branch words.
+    std::optional<uint32_t> code(VAddr address) {
+        uint64_t at = static_cast<uint64_t>(address);
+        uint8_t* src = host(at);
+        if (!src || (hooks.can_execute && hooks.can_execute(hooks.user, at) == 0)) return std::nullopt;
+        uint32_t value;
+        std::memcpy(&value, src, sizeof value);  // 4-byte aligned, so within one page
+        return value;
+    }
+
     void svc(uint32_t imm) {
         if (hooks.on_svc && hooks.on_svc(hooks.user, imm) != 0) {
             halt(jit, static_cast<Dynarmic::HaltReason>(DYN_HALT_SVC));
@@ -118,8 +129,12 @@ struct Callbacks64 final : Dynarmic::A64::UserCallbacks, Common<uint64_t> {
 
     void InterpreterFallback(V pc, size_t) override { exception(pc, 0xffff); }
     void CallSVC(uint32_t imm) override { svc(imm); }
+    std::optional<std::uint32_t> MemoryReadCode(V vaddr) override { return code(vaddr); }
+
     void ExceptionRaised(V pc, Dynarmic::A64::Exception e) override {
-        if (e == Dynarmic::A64::Exception::Yield) return;
+        using E = Dynarmic::A64::Exception;
+        // Hints with no effect on a single guest thread.
+        if (e == E::Yield || e == E::SendEvent || e == E::SendEventLocal) return;
         cpu->SetPC(pc);
         exception(pc, static_cast<uint32_t>(e));
     }
@@ -147,8 +162,15 @@ struct Callbacks32 final : Dynarmic::A32::UserCallbacks, Common<uint32_t> {
 
     void InterpreterFallback(V pc, size_t) override { exception(pc, 0xffff); }
     void CallSVC(uint32_t imm) override { svc(imm); }
+    std::optional<std::uint32_t> MemoryReadCode(V vaddr) override { return code(vaddr); }
+
     void ExceptionRaised(V pc, Dynarmic::A32::Exception e) override {
-        if (e == Dynarmic::A32::Exception::Yield) return;
+        using E = Dynarmic::A32::Exception;
+        // Hints with no effect on a single guest thread.
+        if (e == E::Yield || e == E::SendEvent || e == E::SendEventLocal || e == E::PreloadData ||
+            e == E::PreloadDataWithIntentToWrite || e == E::PreloadInstruction) {
+            return;
+        }
         cpu->Regs()[15] = pc;
         exception(pc, static_cast<uint32_t>(e));
     }

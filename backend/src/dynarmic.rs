@@ -10,6 +10,9 @@ const DEFAULT_CODE_CACHE: u64 = 0;
 
 struct Events {
     stop: Option<Stop>,
+    /// The boxed memory of the same `Dynarmic`; only read, and only while the JIT runs.
+    memory: *const Memory,
+    no_execute: u32,
 }
 
 /// dynarmic JIT on top of a `Memory` page table.
@@ -17,7 +20,8 @@ pub struct Dynarmic {
     arch: Arch,
     // Declared before `memory` and `events`: the JIT holds pointers into both and is dropped first.
     cpu: Handle,
-    memory: Memory,
+    memory: Box<Memory>,
+    executed: u64,
     events: Box<Events>,
 }
 
@@ -43,13 +47,22 @@ unsafe extern "C" fn on_svc(user: *mut c_void, imm: u32) -> i32 {
 unsafe extern "C" fn on_exception(user: *mut c_void, pc: u64, kind: u32) {
     // SAFETY: as in on_svc.
     let events = unsafe { &mut *(user as *mut Events) };
-    events.stop = Some(Stop::Exception { pc, kind });
+    // Reaching a page that may not execute is a fetch fault, the same as on hardware.
+    events.stop = Some(if kind == events.no_execute { Stop::Fault { address: pc, write: false } } else { Stop::Exception { pc, kind } });
 }
 
 unsafe extern "C" fn on_fault(user: *mut c_void, address: u64, _size: u32, is_write: u32) {
     // SAFETY: as in on_svc.
     let events = unsafe { &mut *(user as *mut Events) };
     events.stop.get_or_insert(Stop::Fault { address, write: is_write != 0 });
+}
+
+unsafe extern "C" fn can_execute(user: *mut c_void, address: u64) -> i32 {
+    // SAFETY: as in on_svc; `memory` points into the Box owned by the same Dynarmic and is not
+    // mutated while the JIT runs.
+    let events = unsafe { &*(user as *const Events) };
+    let memory = unsafe { &*events.memory };
+    memory.mapping_at(address).is_some_and(|m| m.perms.contains(Perms::EXEC)) as i32
 }
 
 impl Dynarmic {
@@ -59,13 +72,16 @@ impl Dynarmic {
 
     /// `code_cache` in bytes; 0 keeps the dynarmic default.
     pub fn with_code_cache(arch: Arch, code_cache: u64) -> Result<Dynarmic, Error> {
-        let mut memory = Memory::new(arch.address_bits());
-        let mut events = Box::new(Events { stop: None });
+        let mut memory = Box::new(Memory::new(arch.address_bits()));
+        // dynarmic's Exception::NoExecuteFault, as declared in its A64 and A32 config headers.
+        let no_execute = if arch == Arch::Arm64 { 9 } else { 12 };
+        let mut events = Box::new(Events { stop: None, memory: &*memory, no_execute });
         let hooks = sys::DynHooks {
             user: (&mut *events as *mut Events).cast(),
             on_svc: Some(on_svc),
             on_exception: Some(on_exception),
             on_fault: Some(on_fault),
+            can_execute: Some(can_execute),
         };
         let is64 = (arch == Arch::Arm64) as i32;
         // SAFETY: the page table and hooks outlive the handle (field order).
@@ -73,7 +89,7 @@ impl Dynarmic {
         if raw.is_null() {
             return Err(Error::Backend("dyn_new failed".into()));
         }
-        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, events };
+        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events };
         if arch == Arch::Arm32 {
             // SAFETY: valid handle; user mode, ARM state.
             unsafe { sys::dyn_set_reg(cpu.cpu.0, 16, 0x10) };
@@ -143,6 +159,8 @@ impl Cpu for Dynarmic {
 
     fn protect(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error> {
         self.memory.protect(address, length, perms)?;
+        // Translations depend on the execute bit.
+        self.invalidate(address, length);
         Ok(())
     }
 
@@ -172,6 +190,7 @@ impl Cpu for Dynarmic {
         let mut executed = 0u64;
         // SAFETY: valid handle; hooks point at self.events which is boxed and alive.
         let reason = unsafe { sys::dyn_run(self.cpu.0, budget, &mut executed) };
+        self.executed = executed;
         if reason & sys::DYN_HALT_ERROR != 0 {
             return Err(Error::Backend("dynarmic threw during execution".into()));
         }
@@ -182,6 +201,10 @@ impl Cpu for Dynarmic {
             return Ok(Stop::Halted);
         }
         Ok(Stop::Budget)
+    }
+
+    fn executed(&self) -> u64 {
+        self.executed
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {

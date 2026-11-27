@@ -32,6 +32,7 @@ pub struct Unicorn {
     memory: Memory,
     // unicorn has no "continue": every run starts at an explicit address.
     next: u64,
+    executed: u64,
 }
 
 impl Unicorn {
@@ -64,7 +65,7 @@ impl Unicorn {
             false
         })
         .map_err(uc_error)?;
-        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0 };
+        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0 };
         cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
         Ok(cpu)
@@ -159,6 +160,7 @@ impl Cpu for Unicorn {
 
     fn resume(&mut self, budget: u64) -> Result<Stop, Error> {
         self.uc.get_data_mut().stop = None;
+        self.executed = 0;
         // count = 0 means unlimited; any other value makes unicorn instrument every instruction.
         let count = if budget == u64::MAX { 0 } else { budget as usize };
         let begin = self.next;
@@ -168,7 +170,12 @@ impl Cpu for Unicorn {
             return Ok(stop);
         }
         result.map_err(uc_error)?;
+        self.executed = budget;
         Ok(Stop::Budget)
+    }
+
+    fn executed(&self) -> u64 {
+        self.executed
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {

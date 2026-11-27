@@ -54,8 +54,12 @@ impl Linker {
                 read_table(memory, bias.wrapping_add(at), size, is64, rela, &mut relocations)?;
             }
         }
-        if get(DT_ANDROID_REL).is_some() || get(DT_ANDROID_RELA).is_some() {
-            self.report.warnings.push(format!("{}: Android packed relocations are not supported yet", module.name));
+        let packed = [(DT_ANDROID_RELA, DT_ANDROID_RELASZ, true), (DT_ANDROID_REL, DT_ANDROID_RELSZ, false)];
+        for (tag, size_tag, rela) in packed {
+            if let (Some(at), Some(size)) = (get(tag), get(size_tag)) {
+                let raw = cpu.memory().read_vec(bias.wrapping_add(at), size as usize)?;
+                read_packed(&raw, is64, rela, &mut relocations).map_err(|e| Error::Malformed(format!("{}: {e}", module.name)))?;
+            }
         }
         if let (Some(at), Some(size)) = (get(DT_RELR), get(DT_RELRSZ)) {
             apply_relr(cpu, bias, bias.wrapping_add(at), size, is64)?;
@@ -152,7 +156,9 @@ impl Linker {
         }
         let text = String::from_utf8_lossy(&name).into_owned();
         self.report.unresolved_symbols.push((module_name.to_string(), text.clone()));
-        hooks.unresolved(cpu, module_name, &text)
+        // STT_OBJECT and STT_TLS references are data; everything else may be called.
+        let data = matches!(sym.kind(), 1 | 6);
+        hooks.unresolved(cpu, module_name, &text, data, sym.size)
     }
 }
 
@@ -183,6 +189,88 @@ fn read_table(
         let (symbol, kind) = if is64 { ((info >> 32) as u32, info as u32) } else { ((info >> 8) as u32, (info & 0xff) as u32) };
         let addend = rela.then(|| if is64 { word(2) as i64 } else { word(2) as u32 as i32 as i64 });
         out.push(Relocation { offset, kind, symbol, addend });
+    }
+    Ok(())
+}
+
+struct Leb<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+
+impl Leb<'_> {
+    fn next(&mut self) -> Result<i64, String> {
+        let mut value: i64 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = *self.data.get(self.at).ok_or("packed relocations end early")?;
+            self.at += 1;
+            if shift < 64 {
+                value |= ((byte & 0x7f) as i64) << shift;
+            }
+            shift += 7;
+            if byte & 0x80 == 0 {
+                if shift < 64 && byte & 0x40 != 0 {
+                    value |= -1i64 << shift;
+                }
+                return Ok(value);
+            }
+        }
+    }
+}
+
+/// Android packed relocations ("APS2"): groups of SLEB128-encoded entries sharing info, offset
+/// delta or addend.
+fn read_packed(raw: &[u8], is64: bool, rela: bool, out: &mut Vec<Relocation>) -> Result<(), String> {
+    const BY_INFO: i64 = 1;
+    const BY_OFFSET_DELTA: i64 = 2;
+    const BY_ADDEND: i64 = 4;
+    const HAS_ADDEND: i64 = 8;
+    if raw.len() < 4 || &raw[..4] != b"APS2" {
+        return Err("packed relocations without APS2 magic".into());
+    }
+    let mut leb = Leb { data: raw, at: 4 };
+    let mut remaining = leb.next()?;
+    let mut offset = leb.next()? as u64;
+    let mut info = 0u64;
+    let mut addend = 0i64;
+    if remaining < 0 || remaining as usize > raw.len() * 8 {
+        return Err(format!("implausible packed relocation count {remaining}"));
+    }
+    out.reserve(remaining as usize);
+    while remaining > 0 {
+        let size = leb.next()?;
+        let flags = leb.next()?;
+        if size <= 0 || size > remaining {
+            return Err(format!("bad packed relocation group size {size}"));
+        }
+        let delta = if flags & BY_OFFSET_DELTA != 0 { leb.next()? as u64 } else { 0 };
+        if flags & BY_INFO != 0 {
+            info = leb.next()? as u64;
+        }
+        if flags & HAS_ADDEND != 0 {
+            if !rela {
+                return Err("REL packed relocations carry addends".into());
+            }
+            if flags & BY_ADDEND != 0 {
+                addend = addend.wrapping_add(leb.next()?);
+            }
+        } else {
+            addend = 0;
+        }
+        for _ in 0..size {
+            offset = offset.wrapping_add(if flags & BY_OFFSET_DELTA != 0 { delta } else { leb.next()? as u64 });
+            if flags & BY_INFO == 0 {
+                info = leb.next()? as u64;
+            }
+            if flags & HAS_ADDEND != 0 && flags & BY_ADDEND == 0 {
+                addend = addend.wrapping_add(leb.next()?);
+            }
+            let (symbol, kind) = if is64 { ((info >> 32) as u32, info as u32) } else { ((info as u32 >> 8), (info & 0xff) as u32) };
+            let place = if is64 { offset } else { offset & 0xffff_ffff };
+            out.push(Relocation { offset: place, kind, symbol, addend: rela.then_some(addend) });
+        }
+        remaining -= size;
     }
     Ok(())
 }
@@ -223,4 +311,26 @@ fn apply_relr(cpu: &mut dyn Cpu, bias: u64, at: u64, size: u64, is64: bool) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_group_by_info_and_offset_delta() {
+        // count 2, start offset 0x1000; one group of 2 sharing info R_ARM_RELATIVE and delta 4.
+        let raw = [b'A', b'P', b'S', b'2', 0x02, 0x80, 0x20, 0x02, 0x03, 0x04, 0x17];
+        let mut out = Vec::new();
+        read_packed(&raw, false, false, &mut out).unwrap();
+        let got: Vec<(u64, u32, u32)> = out.iter().map(|r| (r.offset, r.kind, r.symbol)).collect();
+        assert_eq!(got, vec![(0x1004, 23, 0), (0x1008, 23, 0)]);
+        assert!(out.iter().all(|r| r.addend.is_none()));
+    }
+
+    #[test]
+    fn packed_rejects_bad_magic_and_truncation() {
+        assert!(read_packed(b"APS1\x00\x00", false, false, &mut Vec::new()).is_err());
+        assert!(read_packed(b"APS2\x05\x00\x01", false, false, &mut Vec::new()).is_err());
+    }
 }

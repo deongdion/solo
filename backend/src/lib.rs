@@ -90,6 +90,9 @@ pub trait Cpu {
     fn pc(&self) -> u64;
     /// Continues from the current state until a stop condition or until `budget` instructions ran.
     fn resume(&mut self, budget: u64) -> Result<Stop, Error>;
+    /// Instructions the last `resume` ran. Backends that cannot count report 0 unless the budget
+    /// ran out, so callers that spread one budget over several resumes stay conservative.
+    fn executed(&self) -> u64;
     /// Discards translated code for a range after the guest code there was rewritten.
     fn invalidate(&mut self, address: u64, length: u64);
 

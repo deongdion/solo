@@ -106,10 +106,13 @@ impl Resolver for DirResolver {
             return std::fs::read(path).ok().map(|d| (name.to_string(), d));
         }
         let file = name.rsplit('/').next().unwrap_or(name);
+        // unidbg stores libstdc++.so as libstdcpp.so; accept both spellings.
+        let alternate = file.replace('+', "p");
         for dir in &self.dirs {
-            let candidate = dir.join(file);
-            if candidate.is_file() {
-                return std::fs::read(&candidate).ok().map(|d| (candidate.to_string_lossy().into_owned(), d));
+            for candidate in [dir.join(file), dir.join(&alternate)] {
+                if candidate.is_file() {
+                    return std::fs::read(&candidate).ok().map(|d| (candidate.to_string_lossy().into_owned(), d));
+                }
             }
         }
         None
@@ -290,8 +293,14 @@ impl Emulator {
     }
 
     fn run_loop(&mut self) -> Result<(), Error> {
+        // One budget per call, spread over the resumes between syscalls and host calls.
+        let mut remaining = self.budget;
         loop {
-            let stop = self.cpu.resume(self.budget)?;
+            let stop = self.cpu.resume(remaining)?;
+            remaining = remaining.saturating_sub(self.cpu.executed());
+            if remaining == 0 && stop != Stop::Returned {
+                return Err(Error::Budget);
+            }
             match stop {
                 Stop::Returned => return Ok(()),
                 Stop::Svc(0) => match self.kernel.syscall(self.cpu.as_mut())? {

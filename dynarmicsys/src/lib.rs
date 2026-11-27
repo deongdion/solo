@@ -23,6 +23,7 @@ pub struct DynHooks {
     pub on_svc: Option<unsafe extern "C" fn(user: *mut c_void, imm: u32) -> i32>,
     pub on_exception: Option<unsafe extern "C" fn(user: *mut c_void, pc: u64, kind: u32)>,
     pub on_fault: Option<unsafe extern "C" fn(user: *mut c_void, address: u64, size: u32, is_write: u32)>,
+    pub can_execute: Option<unsafe extern "C" fn(user: *mut c_void, address: u64) -> i32>,
 }
 
 unsafe extern "C" {

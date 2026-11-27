@@ -37,8 +37,9 @@ pub trait Resolver {
 pub trait Hooks {
     /// Called for every definition found in `library`; returning an address replaces it.
     fn intercept(&mut self, cpu: &mut dyn Cpu, library: &str, symbol: &str) -> Option<u64>;
-    /// Address to bind for a strong reference nothing defines (a stub that reports the call).
-    fn unresolved(&mut self, cpu: &mut dyn Cpu, module: &str, symbol: &str) -> u64;
+    /// Address to bind for a strong reference nothing defines: a stub that reports the call, or
+    /// zeroed storage of at least `size` bytes when the reference is to data.
+    fn unresolved(&mut self, cpu: &mut dyn Cpu, module: &str, symbol: &str, data: bool, size: u64) -> u64;
 }
 
 /// A loaded shared object.

@@ -119,6 +119,16 @@ Done (tests in `runtime/tests/libc.rs`, both architectures, dynarmic):
 
 Fixed while bringing libc up: arm64 TLS is TPIDR_EL0 (was TPIDRRO_EL0); dynarmic needs an exclusive monitor (LDXR/STXR) and a CP15 coprocessor (TPIDRURO on A32); allocations are keyed by host address, because a partly unmapped range can be remapped at the start of its old allocation.
 
+libtmessages.29.so (M0 library): loads with its dependencies and runs its init functions on both architectures (JNI_OnLoad waits for M2). Measured on this machine: arm64 load+init 243 ms, arm32 209 ms; 8 modules; 5 missing libraries (jnigraphics, EGL, GLESv2, android, OpenSLES) and 48 unresolved symbols, all reported in the summary. Not comparable with the M0 init numbers, which include JNI_OnLoad and the JVM.
+
+Hardening from that run:
+- Android packed relocations (APS2, `DT_ANDROID_REL[A]`) are applied; armv7 libc++ uses them. Without them the guest jumped to unrelocated addresses.
+- dynarmic code fetch honours the execute bit and unmapped pages: a jump into data or unmapped memory is a fetch fault. Before, the fetch callback returned 0 after a fault and dynarmic kept translating the next word, growing one block until the host ran out of memory (3.4 GB in 2 s, measured). `protect` invalidates translations.
+- The instruction budget covers a whole call; before, each resume after a syscall got a fresh budget, so a syscall loop never stopped.
+- A32 hint instructions (PLD, PLDW, PLI, SEV, SEVL) no longer stop execution.
+- Unresolved data symbols bind to zeroed storage instead of a code stub; library names with `+` also resolve with `p` (unidbg's file names).
+- Benchmark after the code fetch check (3 runs, p50): arm64 checksum 362-384 us (before 359-379), copy 778-841 us (before 796-803); no measurable change.
+
 Next: byte-equal comparison with unidbg on fixtures, memory magic scan (F6), non-interactive failure dump (F3), libtmessages load and init.
 
 ## Build
