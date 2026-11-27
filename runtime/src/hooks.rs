@@ -142,7 +142,7 @@ fn svc_bytes(arch: Arch, thumb: bool) -> Vec<u8> {
 const RETURN_STUB: u64 = layout::HOOK_STUBS;
 
 /// The register and value of an A64 adr/adrp at `pc`.
-fn a64_adr(insn: u32, pc: u64) -> Option<(u32, u64)> {
+pub(crate) fn a64_adr(insn: u32, pc: u64) -> Option<(u32, u64)> {
     if insn & 0x1f00_0000 != 0x1000_0000 {
         return None;
     }
@@ -154,7 +154,7 @@ fn a64_adr(insn: u32, pc: u64) -> Option<(u32, u64)> {
 }
 
 /// Whether an A64 instruction computes nothing from its own address.
-fn a64_movable(insn: u32) -> bool {
+pub(crate) fn a64_movable(insn: u32) -> bool {
     let pc_relative = insn & 0x1f00_0000 == 0x1000_0000 // adr, adrp
         || insn & 0x7c00_0000 == 0x1400_0000 // b, bl
         || insn & 0xff00_0010 == 0x5400_0000 // b.cond
@@ -167,7 +167,7 @@ fn a64_movable(insn: u32) -> bool {
 
 /// The arm32 prologue forms that run anywhere: push/stmdb sp! without PC, sub sp, mov ip, sp
 /// (ARM), and push without PC and sub sp (Thumb, 16 and 32 bits). Everything else is stepped.
-fn a32_movable(bytes: &[u8], thumb: bool) -> Option<usize> {
+pub(crate) fn a32_movable(bytes: &[u8], thumb: bool) -> Option<usize> {
     if thumb {
         let first = u16::from_le_bytes([bytes[0], bytes[1]]);
         if first & 0xfe00 == 0xb400 || first & 0xff80 == 0xb080 {
@@ -334,7 +334,7 @@ impl Emulator {
     }
 
     /// `size` bytes, 8-aligned, in the stubs page (mapped on first use, return stub first).
-    fn alloc_stub(&mut self, size: u64) -> Result<u64, Error> {
+    pub(crate) fn alloc_stub(&mut self, size: u64) -> Result<u64, Error> {
         if self.hooks.stubs_next == 0 {
             let bytes = svc_bytes(self.cpu.arch(), false);
             self.cpu.map(layout::HOOK_STUBS, layout::HOOK_STUBS_SIZE, Perms::RX, "[hooks]")?;
@@ -347,6 +347,11 @@ impl Emulator {
         }
         self.hooks.stubs_next = (at + size + 7) & !7;
         Ok(at)
+    }
+
+    /// Whether an inline hook patched the instruction at `site`.
+    pub(crate) fn hooked_at(&self, site: u64) -> bool {
+        self.hooks.sites.contains_key(&site)
     }
 
     /// The hook site an `svc #HOOK_SVC` that stopped with the PC after it belongs to.

@@ -216,12 +216,22 @@ pub fn gnu_hash(name: &[u8]) -> u32 {
 /// (link-time address, name) sorted by address. Only used to name addresses: unlike the dynamic
 /// symbols it includes static functions. The Thumb bit is cleared on 32-bit functions.
 pub fn static_symbols(data: &[u8], is64: bool) -> Vec<(u64, String)> {
+    static_tables(data, is64).0
+}
+
+/// (address, name) symbols and (start, end) Thumb ranges, both link-time.
+pub type StaticTables = (Vec<(u64, String)>, Vec<(u64, u64)>);
+
+/// `.symtab` functions and objects (as `static_symbols`) and the link-time ranges of its Thumb
+/// functions (arm32: the value's low bit set), sorted.
+pub fn static_tables(data: &[u8], is64: bool) -> StaticTables {
+    let mut thumb = Vec::new();
     let (shoff, shentsize, shnum) = if is64 {
         (u64_at(data, 40), u16_at(data, 58), u16_at(data, 60))
     } else {
         (u32_at(data, 32).map(u64::from), u16_at(data, 46), u16_at(data, 48))
     };
-    let (Some(shoff), Some(shentsize), Some(shnum)) = (shoff, shentsize, shnum) else { return Vec::new() };
+    let (Some(shoff), Some(shentsize), Some(shnum)) = (shoff, shentsize, shnum) else { return (Vec::new(), thumb) };
     // (type, offset, size, link) of section `i`.
     let section = |i: usize| -> Option<(u32, usize, usize, usize)> {
         let at = (shoff as usize).checked_add(i.checked_mul(shentsize as usize)?)?;
@@ -243,10 +253,10 @@ pub fn static_symbols(data: &[u8], is64: bool) -> Vec<(u64, String)> {
         let Some(table) = data.get(offset..offset.saturating_add(size)) else { continue };
         let entry = if is64 { 24 } else { 16 };
         for sym in table.chunks_exact(entry) {
-            let (name, info, shndx, value) = if is64 {
-                (u32_at(sym, 0), sym[4], u16_at(sym, 6), u64_at(sym, 8))
+            let (name, info, shndx, value, size) = if is64 {
+                (u32_at(sym, 0), sym[4], u16_at(sym, 6), u64_at(sym, 8), u64_at(sym, 16))
             } else {
-                (u32_at(sym, 0), sym[12], u16_at(sym, 14), u32_at(sym, 4).map(u64::from))
+                (u32_at(sym, 0), sym[12], u16_at(sym, 14), u32_at(sym, 4).map(u64::from), u32_at(sym, 8).map(u64::from))
             };
             let (Some(name), Some(shndx), Some(mut value)) = (name, shndx, value) else { continue };
             let kind = info & 0xf;
@@ -254,8 +264,9 @@ pub fn static_symbols(data: &[u8], is64: bool) -> Vec<(u64, String)> {
             if !(kind == 1 || kind == 2) || shndx == 0 || shndx == 0xfff1 || value == 0 {
                 continue;
             }
-            if !is64 && kind == 2 {
+            if !is64 && kind == 2 && value & 1 != 0 {
                 value &= !1;
+                thumb.push((value, value + size.unwrap_or(0).max(2)));
             }
             let rest = strtab.get(name as usize..).unwrap_or(&[]);
             let end = rest.iter().position(|b| *b == 0).unwrap_or(rest.len());
@@ -266,7 +277,9 @@ pub fn static_symbols(data: &[u8], is64: bool) -> Vec<(u64, String)> {
     }
     out.sort();
     out.dedup_by_key(|(value, _)| *value);
-    out
+    thumb.sort();
+    thumb.dedup();
+    (out, thumb)
 }
 
 /// Symbol lookup tables copied out of a loaded module.

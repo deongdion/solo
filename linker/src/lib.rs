@@ -55,6 +55,8 @@ pub struct Module {
     pub symbols: SymbolTable,
     /// `.symtab` functions and objects (link-time address, name), shared between forks.
     pub static_symbols: std::sync::Arc<[(u64, String)]>,
+    /// Link-time ranges of the `.symtab` Thumb functions (arm32).
+    pub thumb_code: std::sync::Arc<[(u64, u64)]>,
     /// Places the loader wrote a symbol's address to (GOT entries and absolute pointers), with
     /// the symbol's name: where an import hook redirects calls.
     pub imports: Vec<(u64, String)>,
@@ -88,6 +90,31 @@ impl Module {
     /// Address of a `.symtab` symbol (local functions and objects; Thumb bit clear).
     pub fn static_symbol(&self, name: &str) -> Option<u64> {
         self.static_symbols.iter().find(|(_, n)| n == name).map(|(value, _)| self.bias.wrapping_add(*value))
+    }
+
+    /// Whether the function containing `address` is Thumb code (arm32), from `.symtab` function
+    /// ranges or the dynamic symbols; None when no function symbol covers it.
+    pub fn is_thumb(&self, address: u64) -> Option<bool> {
+        let offset = address.wrapping_sub(self.bias);
+        let index = self.thumb_code.partition_point(|(start, _)| *start <= offset);
+        if index > 0 && offset < self.thumb_code[index - 1].1 {
+            return Some(true);
+        }
+        let mut arm = false;
+        for i in 0..self.symbols.len() {
+            let Some(s) = self.symbols.symbol(i) else { continue };
+            if s.info & 0xf != 2 || !s.is_defined() {
+                continue;
+            }
+            let start = s.value & !1;
+            if offset >= start && offset < start + s.size.max(2) {
+                if s.value & 1 != 0 {
+                    return Some(true);
+                }
+                arm = true;
+            }
+        }
+        arm.then_some(false)
     }
 
     /// Nearest dynamic or `.symtab` symbol at or below `address`.
@@ -288,6 +315,7 @@ impl Linker {
             cpu.protect(start, length, Perms::from_bits(bits))?;
         }
 
+        let tables = static_tables(data, elf.is64);
         let mut module = Module {
             name: file,
             path: path.to_string(),
@@ -296,7 +324,8 @@ impl Linker {
             size: span,
             bias,
             symbols: SymbolTable { is64: elf.is64, ..Default::default() },
-            static_symbols: static_symbols(data, elf.is64).into(),
+            static_symbols: tables.0.into(),
+            thumb_code: tables.1.into(),
             imports: Vec::new(),
             needed: Vec::new(),
             init: Vec::new(),

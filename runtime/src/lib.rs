@@ -7,6 +7,8 @@
 //!
 //! A call into the guest returns through the trampoline page (`backend::TRAMPOLINE`).
 
+pub mod debug;
+pub mod gdb;
 pub mod hooks;
 mod host;
 mod jni;
@@ -21,6 +23,8 @@ use kernel::{Config as KernelConfig, Kernel, Outcome, signals};
 use linker::{Linker, Resolver};
 use machine::Perms;
 
+pub use debug::{DebugEvent, Debugger, Resume};
+pub use gdb::GdbStub;
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
 pub use tracing::MemoryAccess;
@@ -73,6 +77,12 @@ pub enum Error {
     Kernel(#[from] kernel::Error),
     #[error("hook: {0}")]
     Hook(String),
+    /// A breakpoint was hit with no debugger installed.
+    #[error("breakpoint at {0:#x} with no debugger")]
+    Breakpoint(u64),
+    /// The debugger answered `Resume::Abort`.
+    #[error("aborted by the debugger")]
+    Aborted,
     #[error("{0}")]
     Crash(Box<Crash>),
     #[error("guest exited with status {0}")]
@@ -188,6 +198,7 @@ pub struct Emulator {
     pub(crate) trace: Option<inspect::trace::Trace>,
     /// Watched accesses taken from the cpu while tracing, tagged with their instruction.
     pub(crate) accesses: Vec<tracing::MemoryAccess>,
+    pub(crate) debug: debug::Debug,
 }
 
 impl Emulator {
@@ -220,6 +231,7 @@ impl Emulator {
             hooks: hooks::Hooks::default(),
             trace: None,
             accesses: Vec::new(),
+            debug: debug::Debug::default(),
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -256,6 +268,7 @@ impl Emulator {
             hooks: self.hooks.clone(),
             trace: None,
             accesses: Vec::new(),
+            debug: self.debug.clone(),
         })
     }
 
@@ -278,6 +291,8 @@ impl Emulator {
         self.onload_events = template.onload_events.clone();
         self.budget = template.budget;
         self.hooks = template.hooks.clone();
+        // The breakpoints are in the restored memory; this emulator's debugger stays.
+        self.debug.breakpoints = template.debug.breakpoints.clone();
         Ok(())
     }
 
@@ -455,6 +470,13 @@ impl Emulator {
             let slice = if threaded { remaining.min(THREAD_SLICE) } else { remaining };
             let stop = match next.take() {
                 Some(stop) => stop,
+                None if self.debug.stepping => {
+                    remaining = remaining.saturating_sub(1);
+                    if remaining == 0 {
+                        return Err(Error::Budget);
+                    }
+                    self.debug_step()?
+                }
                 None => {
                     let (stop, executed) = if self.trace.is_some() {
                         self.traced_resume(slice)?
@@ -494,6 +516,15 @@ impl Emulator {
                         Outcome::Killed(signo) => return Err(Error::Killed(signo)),
                     },
                 },
+                Stop::Svc(debug::BREAK_SVC) => match self.break_hit(self.cpu.pc())? {
+                    Some(stop) => next = stop,
+                    None => match self.kernel.syscall(self.cpu.as_mut())? {
+                        Outcome::Continue => {}
+                        Outcome::Exit(code) => return Err(Error::Exited(code)),
+                        Outcome::Deadlock => return Err(Error::Deadlock),
+                        Outcome::Killed(signo) => return Err(Error::Killed(signo)),
+                    },
+                },
                 Stop::Svc(imm) if imm >= HOST_BASE => {
                     let index = (imm - HOST_BASE) as usize;
                     let function = self.host.functions.get(index).cloned();
@@ -518,6 +549,7 @@ impl Emulator {
                 Stop::Fault { address, write } => {
                     let code = if self.cpu.memory().mapping_at(address).is_some() { signals::SEGV_ACCERR } else { signals::SEGV_MAPERR };
                     if !self.kernel.fault_signal(self.cpu.as_mut(), signals::SIGSEGV, code, address)? {
+                        self.debug_signal(self.cpu.pc(), signals::SIGSEGV);
                         return Err(self.crash(StopKind::Fault { address, write }));
                     }
                 }
@@ -526,6 +558,7 @@ impl Emulator {
                         if kind == backend::EXCEPTION_BREAKPOINT { (signals::SIGTRAP, signals::TRAP_BRKPT) } else { (signals::SIGILL, signals::ILL_ILLOPC) };
                     self.cpu.set_pc(pc);
                     if !self.kernel.fault_signal(self.cpu.as_mut(), signo, code, pc)? {
+                        self.debug_signal(pc, signo);
                         return Err(self.crash(StopKind::Exception { pc, kind }));
                     }
                 }
