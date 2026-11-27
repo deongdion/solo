@@ -171,7 +171,7 @@ dependencies = [
 name = "javavm"
 version = "0.0.1"
 dependencies = [
- "kernel",
+ "backend",
  "machine",
  "thiserror",
 ]

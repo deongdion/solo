@@ -265,11 +265,10 @@ impl SymbolTable {
             }
             loop {
                 let chain = *gnu.chains.get((index - gnu.symoffset) as usize)?;
-                if (chain | 1) == (h | 1) {
-                    if let Some(s) = found(index as usize) {
+                if (chain | 1) == (h | 1)
+                    && let Some(s) = found(index as usize) {
                         return Some(s);
                     }
-                }
                 if chain & 1 != 0 {
                     return None;
                 }

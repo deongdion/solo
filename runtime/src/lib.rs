@@ -8,6 +8,7 @@
 //! A call into the guest returns through the trampoline page (`backend::TRAMPOLINE`).
 
 mod host;
+mod jni;
 pub mod report;
 
 use std::path::PathBuf;
@@ -18,6 +19,8 @@ use linker::{Linker, Resolver};
 use machine::Perms;
 
 pub use host::HostFunction;
+pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
+pub use jni::OnLoadEvent;
 pub use report::{Crash, StopKind, Summary};
 
 /// Guest memory layout, the same as unidbg's so addresses can be compared one to one.
@@ -55,6 +58,15 @@ pub enum Error {
     Exited(i32),
     #[error("instruction budget exhausted")]
     Budget,
+    #[error("{error} (called from {caller})")]
+    Jni { error: javavm::JniError, caller: String },
+    /// A Java exception was pending when a call from the host returned.
+    #[error("Java exception: {description}")]
+    JavaException { exception: ObjectId, description: String },
+    #[error("no native implementation of {0} (not registered, no Java_ symbol exported)")]
+    NoNative(String),
+    #[error("{0} is not exported by the module")]
+    NoSymbol(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +142,11 @@ pub struct Emulator {
     pub kernel: Kernel,
     resolver: DirResolver,
     host: host::Host,
+    /// Java side of JNI: objects, classes, references and handlers.
+    pub vm: Vm,
+    /// Heap size after the last collection; the next one runs at twice this.
+    collect_at: usize,
+    pub(crate) onload_events: Vec<jni::OnLoadEvent>,
     budget: u64,
     depth: u32,
     pub(crate) precise_faults: bool,
@@ -157,6 +174,9 @@ impl Emulator {
             kernel,
             resolver: DirResolver { dirs: options.library_dirs },
             host: host::Host::default(),
+            vm: Vm::new(layout::MMAP_BASE, limit),
+            collect_at: 4096,
+            onload_events: Vec::new(),
             budget: options.budget,
             depth: 0,
             #[cfg(feature = "unicorn")]
@@ -165,6 +185,7 @@ impl Emulator {
             precise_faults: options.precise_faults,
         };
         emulator.setup(&options.env)?;
+        emulator.install_jni()?;
         Ok(emulator)
     }
 
@@ -272,21 +293,29 @@ impl Emulator {
 
     /// Calls a guest function and returns its first result register.
     pub fn call(&mut self, function: u64, args: &[u64]) -> Result<u64, Error> {
+        let slots: Vec<javavm::args::Slot> = args.iter().map(|&a| javavm::args::Slot::Word(a)).collect();
+        let returned = self.call_slots(function, &slots)?;
+        Ok(if self.arch() == Arch::Arm64 { returned.r0 } else { returned.r0 & 0xffff_ffff })
+    }
+
+    /// Calls a guest function with typed arguments laid out per the platform ABI (FP registers
+    /// on AArch64, aligned register pairs for 64-bit values on 32-bit) and returns its result
+    /// registers. The caller's PC, LR and SP are restored, so this nests inside host calls.
+    pub fn call_slots(&mut self, function: u64, slots: &[javavm::args::Slot]) -> Result<javavm::args::Returned, Error> {
         let saved_pc = self.cpu.pc();
         let saved_lr = self.cpu.reg(Reg::Lr);
         let saved_sp = self.cpu.reg(Reg::Sp);
-        let registers = if self.arch() == Arch::Arm64 { 8 } else { 4 };
-        let word = self.word();
+        let layout = javavm::args::layout(self.arch(), slots);
         let mut sp = saved_sp;
-        if args.len() > registers {
-            let extra = &args[registers..];
-            sp = (sp - extra.len() as u64 * word) & !15;
-            for (i, v) in extra.iter().enumerate() {
-                self.write_word(sp + i as u64 * word, *v)?;
-            }
+        if !layout.stack.is_empty() {
+            sp = (sp - layout.stack.len() as u64) & !15;
+            self.cpu.memory_mut().write(sp, &layout.stack)?;
         }
-        for (i, v) in args.iter().take(registers).enumerate() {
+        for (i, v) in layout.general.iter().enumerate() {
             self.cpu.set_reg(Reg::General(i as u8), *v);
+        }
+        for (i, v) in layout.fp.iter().enumerate() {
+            self.cpu.set_reg(Reg::Fp(i as u8), *v);
         }
         self.cpu.set_reg(Reg::Sp, sp);
         self.cpu.set_reg(Reg::Lr, TRAMPOLINE);
@@ -294,12 +323,12 @@ impl Emulator {
         self.depth += 1;
         let result = self.run_loop();
         self.depth -= 1;
-        let value = self.cpu.reg(Reg::General(0));
+        let returned = javavm::args::Returned::read(self.cpu.as_ref());
         self.cpu.set_reg(Reg::Sp, saved_sp);
         self.cpu.set_reg(Reg::Lr, saved_lr);
         self.cpu.set_pc(saved_pc);
         result?;
-        Ok(if self.arch() == Arch::Arm64 { value } else { value & 0xffff_ffff })
+        Ok(returned)
     }
 
     fn run_loop(&mut self) -> Result<(), Error> {
@@ -321,6 +350,8 @@ impl Emulator {
                     let index = (imm - HOST_BASE) as usize;
                     let function = self.host.functions.get(index).cloned();
                     match function {
+                        Some(HostFunction::Jni(slot)) => self.jni_slot(slot as usize)?,
+                        Some(HostFunction::JavaVm(slot)) => self.java_vm_slot(slot as usize)?,
                         Some(f) => {
                             let value = self.host_call(&f)?;
                             self.cpu.set_reg(Reg::General(0), value);

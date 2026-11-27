@@ -44,7 +44,7 @@ fn backtrace(emulator: &Emulator) -> Vec<String> {
     let memory = cpu.memory();
     for _ in 0..32 {
         let writable = memory.mapping_at(fp).is_some_and(|m| m.perms.contains(machine::Perms::WRITE) && fp + 2 * word <= m.end);
-        if fp == 0 || fp % word != 0 || !writable {
+        if fp == 0 || !fp.is_multiple_of(word) || !writable {
             break;
         }
         let read = |at: u64| if word == 8 { memory.read_u64(at).ok() } else { memory.read_u32(at).ok().map(u64::from) };
@@ -163,11 +163,19 @@ pub struct Summary {
     pub unresolved_symbols: Vec<(String, String, u64)>,
     pub linker_warnings: Vec<String>,
     pub dlopen: Vec<crate::host::DlopenEvent>,
+    /// JNI calls no handler answered: signature, count, first native caller.
+    pub unhandled_jni: Vec<(String, u64, String)>,
+    /// JNI_OnLoad, RegisterNatives and FatalError, in order of the calls that made them.
+    pub jni_timeline: Vec<String>,
+    pub jni_warnings: Vec<String>,
 }
 
 impl Summary {
     pub fn is_clean(&self) -> bool {
-        self.unhandled_syscalls.is_empty() && self.missing_libraries.is_empty() && self.unresolved_symbols.is_empty()
+        self.unhandled_syscalls.is_empty()
+            && self.missing_libraries.is_empty()
+            && self.unresolved_symbols.is_empty()
+            && self.unhandled_jni.is_empty()
     }
 }
 
@@ -188,7 +196,36 @@ pub(crate) fn summary(emulator: &Emulator) -> Summary {
         unresolved_symbols: unresolved,
         linker_warnings: report.warnings.clone(),
         dlopen: emulator.host.dlopen_events.clone(),
+        unhandled_jni: emulator
+            .vm
+            .unhandled
+            .iter()
+            .map(|(s, u)| (s.clone(), u.count, emulator.locate(u.first_caller)))
+            .collect(),
+        jni_timeline: jni_timeline(emulator),
+        jni_warnings: emulator.vm.warnings.clone(),
     }
+}
+
+fn jni_timeline(emulator: &Emulator) -> Vec<String> {
+    let mut lines: Vec<String> = emulator
+        .onload_events
+        .iter()
+        .map(|e| format!("JNI_OnLoad {} -> {:#x} ({:.2} ms)", e.module, e.version, e.millis))
+        .collect();
+    for event in &emulator.vm.events {
+        lines.push(match event {
+            javavm::JniEvent::RegisterNatives { class, methods, caller } => {
+                let list: Vec<String> = methods.iter().map(|(n, d, f)| format!("{n}{d} -> {}", emulator.locate(*f))).collect();
+                format!("RegisterNatives {class} from {}: {}", emulator.locate(*caller), list.join(", "))
+            }
+            javavm::JniEvent::UnregisterNatives { class, caller } => {
+                format!("UnregisterNatives {class} from {}", emulator.locate(*caller))
+            }
+            javavm::JniEvent::FatalError { message, caller } => format!("FatalError {message:?} from {}", emulator.locate(*caller)),
+        });
+    }
+    lines
 }
 
 impl fmt::Display for Summary {
@@ -211,6 +248,19 @@ impl fmt::Display for Summary {
             for w in &self.linker_warnings {
                 writeln!(f, "  {w}")?;
             }
+        }
+        writeln!(f, "unhandled JNI: {}", self.unhandled_jni.len())?;
+        for (signature, count, caller) in &self.unhandled_jni {
+            writeln!(f, "  {signature} x{count} (first from {caller})")?;
+        }
+        if !self.jni_timeline.is_empty() {
+            writeln!(f, "JNI timeline:")?;
+            for line in &self.jni_timeline {
+                writeln!(f, "  {line}")?;
+            }
+        }
+        for w in &self.jni_warnings {
+            writeln!(f, "JNI warning: {w}")?;
         }
         writeln!(f, "dlopen: {}", self.dlopen.len())?;
         for e in &self.dlopen {

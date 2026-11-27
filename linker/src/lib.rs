@@ -184,11 +184,10 @@ impl Linker {
         let mut i = 0;
         while i < group.len() {
             for needed in &self.modules[group[i]].needed {
-                if let Some(dep) = self.find(needed) {
-                    if !group.contains(&dep) {
+                if let Some(dep) = self.find(needed)
+                    && !group.contains(&dep) {
                         group.push(dep);
                     }
-                }
             }
             i += 1;
         }
@@ -371,8 +370,8 @@ fn read_gnu_hash(memory: &machine::Memory, at: u64, is64: bool) -> Result<(GnuHa
     let chains_at = buckets_at + nbuckets as u64 * 4;
     let mut count = symoffset as usize;
     let mut chains = Vec::new();
-    if let Some(&last) = buckets.iter().max() {
-        if last >= symoffset {
+    if let Some(&last) = buckets.iter().max()
+        && last >= symoffset {
             let mut index = last;
             loop {
                 let chain = memory.read_u32(chains_at + (index - symoffset) as u64 * 4)?;
@@ -385,6 +384,5 @@ fn read_gnu_hash(memory: &machine::Memory, at: u64, is64: bool) -> Result<(GnuHa
             let raw = memory.read_vec(chains_at, (count - symoffset as usize) * 4)?;
             chains = raw.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
         }
-    }
     Ok((GnuHash { symoffset, buckets, chains }, count))
 }

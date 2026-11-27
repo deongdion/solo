@@ -68,11 +68,10 @@ fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
             if let Some(found) = find_library(&path, name) {
                 return Some(found);
             }
-        } else if let Some(file) = path.file_name().and_then(|f| f.to_str()) {
-            if candidates.iter().any(|c| c == file) {
+        } else if let Some(file) = path.file_name().and_then(|f| f.to_str())
+            && candidates.iter().any(|c| c == file) {
                 return Some(dir.to_path_buf());
             }
-        }
     }
     None
 }

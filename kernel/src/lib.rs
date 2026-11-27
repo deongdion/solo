@@ -787,15 +787,14 @@ impl Kernel {
         };
         // Write the file contents first, then apply the requested protection.
         cpu.map(address, size, Perms::RW, &label)?;
-        if flags & MAP_ANONYMOUS == 0 && fd >= 0 {
-            if let Some(Target::File { data, .. }) = self.fds.get(&fd) {
+        if flags & MAP_ANONYMOUS == 0 && fd >= 0
+            && let Some(Target::File { data, .. }) = self.fds.get(&fd) {
                 let start = (offset as usize).min(data.len());
                 let end = (start + length as usize).min(data.len());
                 let chunk = data[start..end].to_vec();
                 cpu.memory_mut().write(address, &chunk)?;
                 self.trace(format!("mmap {label} offset={offset:#x} length={length:#x} -> {address:#x}"));
             }
-        }
         cpu.protect(address, size, Perms::from_bits(prot as u8))?;
         Ok(Ok(Some(address as i64)))
     }
