@@ -154,7 +154,24 @@ JNI (`javavm`, `runtime/src/jni.rs`): every JNIEnv and JavaVM slot as host stubs
 
 Measured against unidbg with `bench/jni` (`runtime/tests/jni.rs`): equal output except six lines where unidbg breaks the JNI specification (F14); the Rust runtime gives the specified output on arm64 and armv7, dynarmic and unicorn.
 
-Next: built-in java.lang/java.util models (F11), then libtmessages JNI_OnLoad.
+libtmessages.29.so JNI_OnLoad runs on both architectures with no unhandled JNI call (10 RegisterNatives). The M0 benchmark on this runtime (`tools/tmbench`, `bench/baseline/runrust.ps1`, results in `bench/baseline/results_rust.txt`) produces the same output hashes as unidbg (aesCbc16 `d5e581b4243ddfb6`, pbkdf2 `f6ea85e025a5a03b`). Same machine, same method (one process per case, peak working set sampled from outside), dynarmic on both sides, 3 runs:
+
+| case | unidbg 30911d7 | this runtime |
+|---|---|---|
+| arm64 init (load + JNI_OnLoad) | 1387-1530 ms | 167-197 ms |
+| arm64 aesCbc16 p50 / p99 | 191-198 / 859-1234 us | 5.4-5.6 / 12.9-16.6 us |
+| arm64 pbkdf2_1000 p50 | 5869-6370 us | 2887-3066 us |
+| arm64 peak working set (latency) | 604-637 MB | 44 MB |
+| arm64 throughput k=1 / 4 / 8 | 4231 / 8275 / 17605 calls/s | 131698 / 388598 / 541562 calls/s |
+| arm32 init | 1257-1283 ms | 129-267 ms |
+| arm32 aesCbc16 p50 | 716-733 us | 5.4-10.3 us |
+| arm32 pbkdf2_1000 p50 | 15103-15382 us | 13307-17304 us (no gain) |
+| arm32 peak working set (latency) | 731-740 MB | 27 MB |
+| arm32 throughput k=1 / 4 / 8 | 1150 / 1970 / 1819 calls/s | 86102 / 280076 / 517478 calls/s |
+
+aesCbc16 is dominated by per-call cost (16 bytes of work), pbkdf2 by guest computation. arm32 pbkdf2 shows no gain: both run the same dynarmic A32 JIT; why A32 guest code is 4-5x slower than A64 here is not investigated yet (hypothesis: A32 JIT options, not measured).
+
+Next: built-in java.lang/java.util models (F11).
 
 ## Build
 

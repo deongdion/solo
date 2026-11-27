@@ -1,0 +1,13 @@
+# 2026-11-27T17:51:50 AMD Ryzen 5 5600G with Radeon Graphics tmbench
+latency dynarmic arm64 run1 exit=0 peak_ws_mb=43.9 | init_ms=167.2 first_call_us=6943.5 | aesCbc16 p50_us=5.6 p99_us=15.8 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=3066.4 p99_us=6261.7 n=200 out=f6ea85e025a5a03b | guest_committed_kb=15472 java_objects=1118 unhandled_jni=0
+latency dynarmic arm64 run2 exit=0 peak_ws_mb=44 | init_ms=196.7 first_call_us=5616.8 | aesCbc16 p50_us=5.4 p99_us=12.9 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=2886.6 p99_us=5961.8 n=200 out=f6ea85e025a5a03b | guest_committed_kb=15472 java_objects=1118 unhandled_jni=0
+latency dynarmic arm64 run3 exit=0 peak_ws_mb=44 | init_ms=173.8 first_call_us=5094.0 | aesCbc16 p50_us=5.4 p99_us=16.6 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=2899.4 p99_us=5471.9 n=200 out=f6ea85e025a5a03b | guest_committed_kb=15472 java_objects=1118 unhandled_jni=0
+throughput dynarmic arm64 k=1 exit=0 peak_ws_mb=43.2 | init_all_ms=200.0 | instances=1 calls_per_s=131698
+throughput dynarmic arm64 k=4 exit=0 peak_ws_mb=152 | init_all_ms=233.4 | instances=4 calls_per_s=388598
+throughput dynarmic arm64 k=8 exit=0 peak_ws_mb=295.9 | init_all_ms=232.8 | instances=8 calls_per_s=541562
+latency dynarmic arm32 run1 exit=0 peak_ws_mb=27.4 | init_ms=216.9 first_call_us=5016.6 | aesCbc16 p50_us=5.6 p99_us=31.4 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=17304.3 p99_us=69632.3 n=200 out=f6ea85e025a5a03b | guest_committed_kb=12792 java_objects=1118 unhandled_jni=0
+latency dynarmic arm32 run2 exit=0 peak_ws_mb=27.3 | init_ms=267.0 first_call_us=8647.2 | aesCbc16 p50_us=10.3 p99_us=29.2 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=16573.7 p99_us=74030.5 n=200 out=f6ea85e025a5a03b | guest_committed_kb=12792 java_objects=1118 unhandled_jni=0
+latency dynarmic arm32 run3 exit=0 peak_ws_mb=27.4 | init_ms=129.2 first_call_us=5344.0 | aesCbc16 p50_us=5.4 p99_us=180.4 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=13307.0 p99_us=57760.0 n=200 out=f6ea85e025a5a03b | guest_committed_kb=12792 java_objects=1118 unhandled_jni=0
+throughput dynarmic arm32 k=1 exit=0 peak_ws_mb=26.1 | init_all_ms=147.1 | instances=1 calls_per_s=86102
+throughput dynarmic arm32 k=4 exit=0 peak_ws_mb=82.3 | init_all_ms=267.1 | instances=4 calls_per_s=280076
+throughput dynarmic arm32 k=8 exit=0 peak_ws_mb=157.2 | init_all_ms=408.3 | instances=8 calls_per_s=517478

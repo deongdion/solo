@@ -37,6 +37,13 @@ fn check(arch: Arch) {
     };
     let loaded = started.elapsed();
     assert!(emu.symbol(module, "JNI_OnLoad").is_some());
+    // Probe: what JNI_OnLoad asks of Java (temporary, to choose the built-in models).
+    if std::env::var_os("PROBE_ONLOAD").is_some() {
+        emu.vm.policy = runtime::UnhandledPolicy::Zero;
+        let r = emu.call_jni_onload(module);
+        eprintln!("JNI_OnLoad -> {r:?}
+{}", emu.summary());
+    }
     eprintln!(
         "{arch:?}: emulator {:.1} ms, load+init {:.1} ms, modules {}, committed {} KiB",
         created.as_secs_f64() * 1000.0,

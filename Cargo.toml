@@ -12,6 +12,7 @@ members = [
     "inspect",
     "runtime",
     "tools/backendbench",
+    "tools/tmbench",
 ]
 
 [workspace.package]
