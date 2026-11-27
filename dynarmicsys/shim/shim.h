@@ -32,8 +32,11 @@ typedef struct DynHooks {
 
 // page_table: one host pointer per 4 KiB guest page (null when unmapped).
 // For A64 it holds 1 << (address_bits - 12) entries; for A32 it holds 1 << 20 entries.
+// flags: DYN_PRECISE_FAULTS stops at the faulting instruction (its PC is reported) at the cost of
+// a check after every data access.
+#define DYN_PRECISE_FAULTS 0x1u
 DynCpu* dyn_new(int32_t is64, uint8_t** page_table, uint32_t address_bits, uint64_t code_cache_size,
-                const DynHooks* hooks);
+                uint32_t flags, const DynHooks* hooks);
 void dyn_free(DynCpu* cpu);
 
 // Runs until halted or until `budget` instructions have executed. Stores the executed count.

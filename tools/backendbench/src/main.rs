@@ -1,7 +1,7 @@
 //! Backend benchmark: the same freestanding guest kernels on each backend.
 //!
 //! Usage:
-//!   backendbench <dynarmic|unicorn> <arm64|arm32> latency [code_cache_mib]
+//!   backendbench <dynarmic|dynarmic_precise|unicorn> <arm64|arm32> latency [code_cache_mib]
 //!   backendbench <dynarmic|unicorn> <arm64|arm32> throughput <instances> <seconds> [code_cache_mib]
 //!   backendbench <dynarmic|unicorn> <arm64|arm32> instances <count> [code_cache_mib]
 
@@ -60,6 +60,7 @@ fn kernels(arch: Arch) -> Kernels {
 fn create(backend: &str, arch: Arch, code_cache_mib: u64) -> Box<dyn Cpu> {
     let mut cpu: Box<dyn Cpu> = match backend {
         "dynarmic" => Box::new(backend::Dynarmic::with_code_cache(arch, code_cache_mib << 20).unwrap()),
+        "dynarmic_precise" => Box::new(backend::Dynarmic::with_options(arch, code_cache_mib << 20, true).unwrap()),
         #[cfg(feature = "unicorn")]
         "unicorn" => Box::new(backend::Unicorn::new(arch).unwrap()),
         other => panic!("unknown backend {other}"),

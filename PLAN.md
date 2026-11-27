@@ -129,7 +129,22 @@ Hardening from that run:
 - Unresolved data symbols bind to zeroed storage instead of a code stub; library names with `+` also resolve with `p` (unidbg's file names).
 - Benchmark after the code fetch check (3 runs, p50): arm64 checksum 362-384 us (before 359-379), copy 778-841 us (before 796-803); no measurable change.
 
-Next: byte-equal comparison with unidbg on fixtures, memory magic scan (F6), non-interactive failure dump (F3), libtmessages load and init.
+F6 memory magic scan and dump (`inspect::scan`): dex, zip and ELF images found in readable mappings, each validated and sized from its own header and bounded by its mapping; dumps go to `<kind>_<address>.<ext>` under any host path (tested with a Korean directory name, F9). After loading libtmessages it finds all 8 modules at their bases. Release build, 3 runs each: naive window search 96-185 ms for 11.5-14.1 MiB, memchr::memmem 4.8-6.9 ms.
+
+F3 failure dump: a crash returns `Error::Crash` with registers, module+offset+symbol for pc and lr, the fault region, and a frame-pointer backtrace (x29 on arm64, r7 on Thumb, bounded to writable mappings and 32 frames). Nothing ever waits for input.
+
+Precise fault PCs: dynarmic stops at a faulting data access only with `check_halt_on_memory_access`; otherwise the PC is the translated block's (seen: `vdprintf+0x2420` instead of `strlen+0x10`). Cost, p50 median of 5 alternating runs in one build:
+
+| kernel | precise | block PC | cost |
+|---|---|---|---|
+| arm64 checksum | 437 us | 392 us | +11% |
+| arm64 copy | 963 us | 835 us | +15% |
+| arm32 checksum | 383 us | 301 us | +27% |
+| arm32 copy | 776 us | 727 us | +7% |
+
+So it is an option (`Options::precise_faults`, backendbench `dynarmic_precise`), off by default; the crash report says when the PC is only the block start. Fetch faults are always exact.
+
+Next: byte-equal comparison with unidbg on fixtures.
 
 ## Build
 

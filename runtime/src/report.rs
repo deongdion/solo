@@ -26,6 +26,39 @@ pub struct Crash {
     pub lr: String,
     pub registers: Vec<(String, u64)>,
     pub fault_region: Option<String>,
+    /// False when the backend only knows the PC of the translated block that faulted.
+    pub precise_pc: bool,
+    /// Return addresses from the frame pointer chain, innermost first (module+offset).
+    pub backtrace: Vec<String>,
+}
+
+/// Walks the frame record chain: AArch64 x29 points at {previous x29, x30}; Thumb code built
+/// with frame pointers keeps the same record in r7. Stops at the first record outside a writable
+/// mapping, a non-increasing frame pointer, or 32 frames, so a corrupt stack ends the walk.
+fn backtrace(emulator: &Emulator) -> Vec<String> {
+    let cpu = &emulator.cpu;
+    let arch = cpu.arch();
+    let word = if arch == Arch::Arm64 { 8 } else { 4 };
+    let mut fp = cpu.reg(Reg::General(if arch == Arch::Arm64 { 29 } else { 7 }));
+    let mut frames = Vec::new();
+    let memory = cpu.memory();
+    for _ in 0..32 {
+        let writable = memory.mapping_at(fp).is_some_and(|m| m.perms.contains(machine::Perms::WRITE) && fp + 2 * word <= m.end);
+        if fp == 0 || fp % word != 0 || !writable {
+            break;
+        }
+        let read = |at: u64| if word == 8 { memory.read_u64(at).ok() } else { memory.read_u32(at).ok().map(u64::from) };
+        let (Some(next), Some(lr)) = (read(fp), read(fp + word)) else { break };
+        if lr == 0 || lr == backend::TRAMPOLINE {
+            break;
+        }
+        frames.push(locate(emulator, lr));
+        if next <= fp {
+            break;
+        }
+        fp = next;
+    }
+    frames
 }
 
 fn locate(emulator: &Emulator, address: u64) -> String {
@@ -66,6 +99,13 @@ pub(crate) fn capture(emulator: &Emulator, kind: StopKind) -> Crash {
         StopKind::Exception { pc, .. } => pc,
         _ => cpu.pc(),
     };
+    // Data faults stop at the block boundary unless precise faults are on; a fetch fault is
+    // reported at the address that could not run, which is exact.
+    let precise_pc = emulator.precise_faults
+        || match kind {
+            StopKind::Fault { address, .. } => address == pc,
+            _ => true,
+        };
     Crash {
         kind,
         arch,
@@ -73,6 +113,8 @@ pub(crate) fn capture(emulator: &Emulator, kind: StopKind) -> Crash {
         lr: locate(emulator, cpu.reg(Reg::Lr)),
         registers,
         fault_region,
+        backtrace: backtrace(emulator),
+        precise_pc,
     }
 }
 
@@ -89,13 +131,25 @@ impl fmt::Display for Crash {
             )?,
             StopKind::Exception { kind, .. } => writeln!(f, "guest stopped: CPU exception {kind}")?,
         }
-        writeln!(f, "  pc {}", self.pc)?;
+        if self.precise_pc {
+            writeln!(f, "  pc {}", self.pc)?;
+        } else {
+            writeln!(f, "  pc {} (block start; enable precise_faults for the exact instruction)", self.pc)?;
+        }
         write!(f, "  lr {}", self.lr)?;
         for (i, (name, value)) in self.registers.iter().enumerate() {
             if i % 4 == 0 {
                 write!(f, "\n ")?;
             }
             write!(f, " {name:>3}={value:016x}")?;
+        }
+        if !self.backtrace.is_empty() {
+            write!(f, "
+  backtrace (frame pointers):")?;
+            for (i, frame) in self.backtrace.iter().enumerate() {
+                write!(f, "
+    #{i} {frame}")?;
+            }
         }
         Ok(())
     }

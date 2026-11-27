@@ -70,8 +70,15 @@ impl Dynarmic {
         Dynarmic::with_code_cache(arch, DEFAULT_CODE_CACHE)
     }
 
-    /// `code_cache` in bytes; 0 keeps the dynarmic default.
+    /// `code_cache` in bytes; 0 keeps the dynarmic default. Fault PCs are accurate to the block
+    /// (precise faults cost 7-27% on the backend benchmark kernels; see PLAN.md).
     pub fn with_code_cache(arch: Arch, code_cache: u64) -> Result<Dynarmic, Error> {
+        Dynarmic::with_options(arch, code_cache, false)
+    }
+
+    /// `precise_faults`: a memory fault stops at the faulting instruction and reports its PC.
+    /// Without it the PC is only accurate to the translated block.
+    pub fn with_options(arch: Arch, code_cache: u64, precise_faults: bool) -> Result<Dynarmic, Error> {
         let mut memory = Box::new(Memory::new(arch.address_bits()));
         // dynarmic's Exception::NoExecuteFault, as declared in its A64 and A32 config headers.
         let no_execute = if arch == Arch::Arm64 { 9 } else { 12 };
@@ -85,7 +92,7 @@ impl Dynarmic {
         };
         let is64 = (arch == Arch::Arm64) as i32;
         // SAFETY: the page table and hooks outlive the handle (field order).
-        let raw = unsafe { sys::dyn_new(is64, memory.page_table(), arch.address_bits(), code_cache, &hooks) };
+        let raw = unsafe { sys::dyn_new(is64, memory.page_table(), arch.address_bits(), code_cache, if precise_faults { sys::DYN_PRECISE_FAULTS } else { 0 }, &hooks) };
         if raw.is_null() {
             return Err(Error::Backend("dyn_new failed".into()));
         }

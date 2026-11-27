@@ -42,6 +42,22 @@ fn check(arch: Arch) {
         emu.cpu.memory().committed() / 1024
     );
     eprintln!("{}", emu.summary());
+
+    // Every loaded module is an ELF image in memory; each must be found at its base.
+    let started = Instant::now();
+    let hits = inspect::scan::scan(emu.cpu.memory()).unwrap();
+    let elapsed = started.elapsed();
+    let bases: Vec<u64> = hits.iter().filter(|h| h.kind == inspect::scan::Kind::Elf).map(|h| h.address).collect();
+    for m in &emu.linker.modules {
+        assert!(bases.contains(&m.base), "{} at {:#x} not found", m.name, m.base);
+    }
+    eprintln!(
+        "scan: {} hits ({} ELF) over {} KiB in {:.1} ms",
+        hits.len(),
+        bases.len(),
+        emu.cpu.memory().committed() / 1024,
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 #[test]

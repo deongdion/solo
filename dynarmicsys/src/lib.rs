@@ -26,12 +26,15 @@ pub struct DynHooks {
     pub can_execute: Option<unsafe extern "C" fn(user: *mut c_void, address: u64) -> i32>,
 }
 
+pub const DYN_PRECISE_FAULTS: u32 = 0x1;
+
 unsafe extern "C" {
     pub fn dyn_new(
         is64: i32,
         page_table: *mut *mut u8,
         address_bits: u32,
         code_cache_size: u64,
+        flags: u32,
         hooks: *const DynHooks,
     ) -> *mut DynCpu;
     pub fn dyn_free(cpu: *mut DynCpu);

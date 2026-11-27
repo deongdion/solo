@@ -21,6 +21,7 @@ publish = false
 
 [workspace.dependencies]
 thiserror = "2"
+memchr = "2"
 machine = { path = "machine" }
 backend = { path = "backend" }
 dynarmicsys = { path = "dynarmicsys" }

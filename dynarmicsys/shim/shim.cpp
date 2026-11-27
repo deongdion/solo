@@ -39,7 +39,8 @@ struct Common {
 
     void fault(uint64_t address, uint32_t size, uint32_t is_write) {
         if (hooks.on_fault) hooks.on_fault(hooks.user, address, size, is_write);
-        halt(jit, static_cast<Dynarmic::HaltReason>(DYN_HALT_FAULT));
+        // MemoryAbort makes dynarmic stop at the faulting instruction (check_halt_on_memory_access).
+        halt(jit, static_cast<Dynarmic::HaltReason>(DYN_HALT_FAULT) | Dynarmic::HaltReason::MemoryAbort);
     }
 
     template <typename T>
@@ -226,7 +227,7 @@ struct DynCpu {
 };
 
 static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits, uint64_t code_cache_size,
-                      const DynHooks* hooks) {
+                      uint32_t flags, const DynHooks* hooks) {
     auto cpu = std::make_unique<DynCpu>();
     cpu->is64 = is64 != 0;
     if (cpu->is64) {
@@ -247,6 +248,7 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         config.only_detect_misalignment_via_page_table_on_page_boundary = true;
         config.define_unpredictable_behaviour = true;
         config.enable_cycle_counting = true;
+        config.check_halt_on_memory_access = (flags & DYN_PRECISE_FAULTS) != 0;
         if (code_cache_size != 0) config.code_cache_size = code_cache_size;
         cpu->jit64 = std::make_unique<Dynarmic::A64::Jit>(config);
         cb->cpu = cpu->jit64.get();
@@ -269,6 +271,7 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         config.define_unpredictable_behaviour = true;
         config.enable_cycle_counting = true;
         config.always_little_endian = true;
+        config.check_halt_on_memory_access = (flags & DYN_PRECISE_FAULTS) != 0;
         config.coprocessors[15] = cpu->cp15;
         if (code_cache_size != 0) config.code_cache_size = code_cache_size;
         cpu->jit32 = std::make_unique<Dynarmic::A32::Jit>(config);
@@ -284,9 +287,9 @@ extern "C" {
 
 // C++ exceptions must not cross into Rust: every entry point that can throw catches here.
 DynCpu* dyn_new(int32_t is64, uint8_t** page_table, uint32_t address_bits, uint64_t code_cache_size,
-                const DynHooks* hooks) {
+                uint32_t flags, const DynHooks* hooks) {
     try {
-        return create(is64, page_table, address_bits, code_cache_size, hooks);
+        return create(is64, page_table, address_bits, code_cache_size, flags, hooks);
     } catch (...) {
         return nullptr;
     }

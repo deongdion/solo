@@ -75,6 +75,10 @@ pub struct Options {
     /// Instructions per call before the run stops with `Error::Budget`.
     pub budget: u64,
     pub env: Vec<String>,
+    /// Stop memory faults at the faulting instruction so the crash report shows its PC. Off by
+    /// default: it costs 7-27% on dynarmic (PLAN.md); without it the PC is the translated block's.
+    /// unicorn faults are always precise.
+    pub precise_faults: bool,
 }
 
 impl Options {
@@ -91,6 +95,7 @@ impl Options {
                 "ANDROID_ROOT=/system".into(),
                 "PATH=/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin".into(),
             ],
+            precise_faults: false,
         }
     }
 }
@@ -127,13 +132,14 @@ pub struct Emulator {
     host: host::Host,
     budget: u64,
     depth: u32,
+    pub(crate) precise_faults: bool,
 }
 
 impl Emulator {
     pub fn new(options: Options) -> Result<Emulator, Error> {
         let arch = options.arch;
         let cpu: Box<dyn Cpu> = match options.backend {
-            BackendKind::Dynarmic => Box::new(backend::Dynarmic::new(arch)?),
+            BackendKind::Dynarmic => Box::new(backend::Dynarmic::with_options(arch, 0, options.precise_faults)?),
             #[cfg(feature = "unicorn")]
             BackendKind::Unicorn => Box::new(backend::Unicorn::new(arch)?),
         };
@@ -153,6 +159,10 @@ impl Emulator {
             host: host::Host::default(),
             budget: options.budget,
             depth: 0,
+            #[cfg(feature = "unicorn")]
+            precise_faults: options.precise_faults || options.backend == BackendKind::Unicorn,
+            #[cfg(not(feature = "unicorn"))]
+            precise_faults: options.precise_faults,
         };
         emulator.setup(&options.env)?;
         Ok(emulator)

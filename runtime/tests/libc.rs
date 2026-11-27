@@ -75,3 +75,38 @@ fn libc_arm64() {
 fn libc_arm32() {
     check(Arch::Arm32);
 }
+
+fn crash_has_backtrace(arch: Arch) -> Option<runtime::Crash> {
+    let dir = sdk(arch)?;
+    let mut options = Options::new(arch);
+    options.library_dirs = vec![dir];
+    options.kernel.echo_output = false;
+    options.precise_faults = true;
+    let mut emu = Emulator::new(options).unwrap();
+    let libc = emu.load("libc.so").unwrap();
+    let malloc = emu.symbol(libc, "malloc").unwrap();
+    let buffer = emu.call(malloc, &[256]).unwrap();
+    put(&mut emu, buffer + 128, "%s");
+    let snprintf = emu.symbol(libc, "snprintf").unwrap();
+    match emu.call(snprintf, &[buffer, 64, buffer + 128, 0x10]) {
+        Err(runtime::Error::Crash(crash)) => Some(*crash),
+        other => panic!("expected a crash, got {other:?}"),
+    }
+}
+
+#[test]
+fn crash_report_arm64() {
+    let Some(crash) = crash_has_backtrace(Arch::Arm64) else { return };
+    eprintln!("{crash}");
+    assert!(matches!(crash.kind, runtime::StopKind::Fault { address: 0x10, write: false }));
+    assert!(crash.precise_pc && crash.pc.contains("(strlen+"), "{}", crash.pc);
+    assert!(crash.backtrace.iter().any(|f| f.contains("libc.so+")), "{:?}", crash.backtrace);
+}
+
+#[test]
+fn crash_report_arm32() {
+    let Some(crash) = crash_has_backtrace(Arch::Arm32) else { return };
+    eprintln!("{crash}");
+    assert!(matches!(crash.kind, runtime::StopKind::Fault { address: 0x10, write: false }));
+    assert!(crash.precise_pc && crash.pc.contains("(strlen+"), "{}", crash.pc);
+}
