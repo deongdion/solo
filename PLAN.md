@@ -192,7 +192,11 @@ Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-
 - unicorn fix: the loader set page permissions with one `mprotect` per page; unicorn splits a region on each call and aborts at about a thousand regions on arm32 (`map->sections_nb < TARGET_PAGE_SIZE`), which `tmessages_arm32` hit on unicorn. Runs of pages with the same permissions now take one call.
 - `bench/jni` Native.signals: unidbg arm64 returns `usr1 0 signo 0; probe 1 1 1; blocked 0 pending 0 delivered 0` (handlers never run, the probe reports unmapped memory as readable), unidbg armv7 does not return within 120 s (the fault repeats); the runtime returns `usr1 2 signo 10; probe 1 0 0; blocked 0 pending 1 delivered 1` on both architectures and backends.
 
-Next: 24 h RSS soak.
+- Crash reports and JNI error locations name static functions from the file's `.symtab` (when not stripped) as well as dynamic symbols (`runtime/tests/signals.rs` names_static_functions); they report the PC as exact when the CPU currently has precise faults, including after a handler switched them on.
+- `runtime/tests/tmessages.rs` now asserts that JNI_OnLoad of libtmessages returns 0x10006 with nothing unhandled on the built-in models alone, on both backends (was a manual probe).
+- Soak: `tmbench <arch> dynarmic soak <workers> <seconds>` (two never-recycled pool workers, one instance restored from the template every 1000 calls, every result checked, one line a minute). The 24 h arm64 run started 2026-11-27 19:53 +09:00; results go here when it ends.
+
+Next: 24 h RSS soak result; then M4.
 
 ## Build
 

@@ -205,6 +205,10 @@ pub trait Cpu: Send {
     fn require_precise_faults(&mut self) -> Result<(), Error> {
         Ok(())
     }
+    /// Whether a memory fault stops at the faulting instruction.
+    fn precise_faults(&self) -> bool {
+        true
+    }
     /// The handle that interrupts this CPU from another thread.
     fn interrupt(&self) -> Interrupt;
     /// A new CPU of the same kind and options with a copy of this one's memory and registers.

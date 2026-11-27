@@ -212,6 +212,63 @@ pub fn gnu_hash(name: &[u8]) -> u32 {
     name.iter().fold(5381u32, |h, &c| h.wrapping_mul(33).wrapping_add(c as u32))
 }
 
+/// Function and object symbols of the file's `.symtab` (absent from stripped files), as
+/// (link-time address, name) sorted by address. Only used to name addresses: unlike the dynamic
+/// symbols it includes static functions. The Thumb bit is cleared on 32-bit functions.
+pub fn static_symbols(data: &[u8], is64: bool) -> Vec<(u64, String)> {
+    let (shoff, shentsize, shnum) = if is64 {
+        (u64_at(data, 40), u16_at(data, 58), u16_at(data, 60))
+    } else {
+        (u32_at(data, 32).map(u64::from), u16_at(data, 46), u16_at(data, 48))
+    };
+    let (Some(shoff), Some(shentsize), Some(shnum)) = (shoff, shentsize, shnum) else { return Vec::new() };
+    // (type, offset, size, link) of section `i`.
+    let section = |i: usize| -> Option<(u32, usize, usize, usize)> {
+        let at = (shoff as usize).checked_add(i.checked_mul(shentsize as usize)?)?;
+        if is64 {
+            Some((u32_at(data, at + 4)?, u64_at(data, at + 24)? as usize, u64_at(data, at + 32)? as usize, u32_at(data, at + 40)? as usize))
+        } else {
+            Some((u32_at(data, at + 4)?, u32_at(data, at + 16)? as usize, u32_at(data, at + 20)? as usize, u32_at(data, at + 24)? as usize))
+        }
+    };
+    const SHT_SYMTAB: u32 = 2;
+    let mut out = Vec::new();
+    for i in 0..shnum as usize {
+        let Some((kind, offset, size, link)) = section(i) else { break };
+        if kind != SHT_SYMTAB {
+            continue;
+        }
+        let Some((_, str_offset, str_size, _)) = section(link) else { continue };
+        let Some(strtab) = data.get(str_offset..str_offset.saturating_add(str_size)) else { continue };
+        let Some(table) = data.get(offset..offset.saturating_add(size)) else { continue };
+        let entry = if is64 { 24 } else { 16 };
+        for sym in table.chunks_exact(entry) {
+            let (name, info, shndx, value) = if is64 {
+                (u32_at(sym, 0), sym[4], u16_at(sym, 6), u64_at(sym, 8))
+            } else {
+                (u32_at(sym, 0), sym[12], u16_at(sym, 14), u32_at(sym, 4).map(u64::from))
+            };
+            let (Some(name), Some(shndx), Some(mut value)) = (name, shndx, value) else { continue };
+            let kind = info & 0xf;
+            // STT_OBJECT, STT_FUNC; defined (not SHN_UNDEF) and not absolute (SHN_ABS).
+            if !(kind == 1 || kind == 2) || shndx == 0 || shndx == 0xfff1 || value == 0 {
+                continue;
+            }
+            if !is64 && kind == 2 {
+                value &= !1;
+            }
+            let rest = strtab.get(name as usize..).unwrap_or(&[]);
+            let end = rest.iter().position(|b| *b == 0).unwrap_or(rest.len());
+            if end > 0 {
+                out.push((value, String::from_utf8_lossy(&rest[..end]).into_owned()));
+            }
+        }
+    }
+    out.sort();
+    out.dedup_by_key(|(value, _)| *value);
+    out
+}
+
 /// Symbol lookup tables copied out of a loaded module.
 #[derive(Debug, Clone, Default)]
 pub struct SymbolTable {

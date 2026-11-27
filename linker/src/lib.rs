@@ -53,6 +53,8 @@ pub struct Module {
     /// Load bias: runtime address minus link-time address.
     pub bias: u64,
     pub symbols: SymbolTable,
+    /// `.symtab` functions and objects (link-time address, name), shared between forks.
+    pub static_symbols: std::sync::Arc<[(u64, String)]>,
     pub needed: Vec<String>,
     /// DT_INIT first, then DT_INIT_ARRAY entries, as absolute addresses.
     pub init: Vec<u64>,
@@ -80,7 +82,7 @@ impl Module {
         self.symbols.lookup(name.as_bytes()).map(|s| self.bias.wrapping_add(s.value))
     }
 
-    /// Nearest exported or local symbol at or below `address`.
+    /// Nearest dynamic or `.symtab` symbol at or below `address`.
     pub fn closest_symbol(&self, address: u64) -> Option<(String, u64)> {
         let mut best: Option<(u64, u32)> = None;
         for i in 0..self.symbols.len() {
@@ -88,12 +90,22 @@ impl Module {
             if !s.is_defined() || s.value == 0 {
                 continue;
             }
-            let at = self.bias.wrapping_add(s.value);
+            let at = self.bias.wrapping_add(s.value & if self.symbols.is64 { !0 } else { !1 });
             if at <= address && best.is_none_or(|(b, _)| at > b) {
                 best = Some((at, s.name));
             }
         }
-        best.map(|(at, name)| (String::from_utf8_lossy(self.symbols.name(name)).into_owned(), at))
+        let dynamic = best.map(|(at, name)| (String::from_utf8_lossy(self.symbols.name(name)).into_owned(), at));
+        let offset = address.wrapping_sub(self.bias);
+        let index = self.static_symbols.partition_point(|(value, _)| *value <= offset);
+        let local = index.checked_sub(1).map(|i| {
+            let (value, name) = &self.static_symbols[i];
+            (name.clone(), self.bias.wrapping_add(*value))
+        });
+        match (dynamic, local) {
+            (Some(d), Some(l)) => Some(if l.1 > d.1 { l } else { d }),
+            (d, l) => d.or(l),
+        }
     }
 }
 
@@ -276,6 +288,7 @@ impl Linker {
             size: span,
             bias,
             symbols: SymbolTable { is64: elf.is64, ..Default::default() },
+            static_symbols: static_symbols(data, elf.is64).into(),
             needed: Vec::new(),
             init: Vec::new(),
             symbolic: false,

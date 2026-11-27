@@ -45,3 +45,26 @@ fn signals_arm32() {
     run(Arch::Arm32);
 }
 
+
+/// Static functions (not exported) are named from `.symtab` in addresses the runtime reports.
+#[test]
+fn names_static_functions() {
+    let sdk = root().join("bench/work/unidbg/unidbg-android/src/main/resources/android/sdk23/lib64");
+    if !sdk.is_dir() {
+        return;
+    }
+    let mut options = Options::new(Arch::Arm64);
+    options.backend = common::backend();
+    options.library_dirs = vec![sdk];
+    let mut emu = Emulator::new(options).unwrap();
+    let index = emu.load(root().join("bench/jni/arm64/libjnifix.so").to_str().unwrap()).unwrap();
+    let module = &emu.linker.modules[index];
+    assert!(module.symbols.lookup(b"probe").is_none(), "probe is static");
+    let &(value, _) = module.static_symbols.iter().find(|(_, n)| n == "probe").expect("probe in .symtab");
+    let at = module.bias + value;
+    assert_eq!(module.closest_symbol(at + 8), Some(("probe".to_string(), at)));
+    // An exported function still wins where it is the nearest.
+    let jni = module.symbols.lookup(b"Java_fix_Native_signals").expect("exported");
+    let jni_at = module.bias + jni.value;
+    assert_eq!(module.closest_symbol(jni_at + 4).map(|(n, _)| n), Some("Java_fix_Native_signals".to_string()));
+}

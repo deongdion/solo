@@ -306,6 +306,10 @@ impl Cpu for Dynarmic {
         self.set_precise_faults(true)
     }
 
+    fn precise_faults(&self) -> bool {
+        self.precise_faults
+    }
+
     fn clear_exclusive(&mut self) {
         // SAFETY: valid handle.
         unsafe { sys::dyn_clear_exclusive(self.cpu.0) }

@@ -173,7 +173,6 @@ pub struct Emulator {
     pub(crate) onload_events: Vec<jni::OnLoadEvent>,
     budget: u64,
     depth: u32,
-    pub(crate) precise_faults: bool,
 }
 
 impl Emulator {
@@ -203,10 +202,6 @@ impl Emulator {
             onload_events: Vec::new(),
             budget: options.budget,
             depth: 0,
-            #[cfg(feature = "unicorn")]
-            precise_faults: options.precise_faults || options.backend == BackendKind::Unicorn,
-            #[cfg(not(feature = "unicorn"))]
-            precise_faults: options.precise_faults,
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -240,7 +235,6 @@ impl Emulator {
             onload_events: self.onload_events.clone(),
             budget: self.budget,
             depth: 0,
-            precise_faults: self.precise_faults,
         })
     }
 
@@ -262,7 +256,6 @@ impl Emulator {
         self.collect_at = template.collect_at;
         self.onload_events = template.onload_events.clone();
         self.budget = template.budget;
-        self.precise_faults = template.precise_faults;
         Ok(())
     }
 

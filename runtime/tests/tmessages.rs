@@ -1,5 +1,5 @@
 //! Loads libtmessages.29.so (the M0 benchmark library) with its dependencies and runs its init
-//! functions. JNI_OnLoad needs the JNI layer (M2) and is not called here.
+//! functions, then JNI_OnLoad.
 
 mod common;
 
@@ -37,13 +37,11 @@ fn check(arch: Arch) {
     };
     let loaded = started.elapsed();
     assert!(emu.symbol(module, "JNI_OnLoad").is_some());
-    // Probe: what JNI_OnLoad asks of Java (temporary, to choose the built-in models).
-    if std::env::var_os("PROBE_ONLOAD").is_some() {
-        emu.vm.policy = runtime::UnhandledPolicy::Zero;
-        let r = emu.call_jni_onload(module);
-        eprintln!("JNI_OnLoad -> {r:?}
-{}", emu.summary());
-    }
+    // JNI_OnLoad runs on the built-in Java models alone: no embedder handler, nothing unhandled.
+    let version = emu.call_jni_onload(module).unwrap_or_else(|e| panic!("JNI_OnLoad: {e}
+{}", emu.summary()));
+    assert_eq!(version, Some(0x10006), "JNI_OnLoad version");
+    assert!(emu.vm.unhandled.is_empty(), "unhandled JNI: {:?}", emu.vm.unhandled.keys().collect::<Vec<_>>());
     eprintln!(
         "{arch:?}: emulator {:.1} ms, load+init {:.1} ms, modules {}, committed {} KiB",
         created.as_secs_f64() * 1000.0,

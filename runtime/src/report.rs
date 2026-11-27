@@ -101,7 +101,7 @@ pub(crate) fn capture(emulator: &Emulator, kind: StopKind) -> Crash {
     };
     // Data faults stop at the block boundary unless precise faults are on; a fetch fault is
     // reported at the address that could not run, which is exact.
-    let precise_pc = emulator.precise_faults
+    let precise_pc = emulator.cpu.precise_faults()
         || match kind {
             StopKind::Fault { address, .. } => address == pc,
             _ => true,
