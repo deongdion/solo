@@ -403,6 +403,13 @@ impl Kernel {
                 self.after_switch(switch);
                 ok(0)
             }
+            Sys::Ptrace => {
+                // ptrace(request, ...). An anti-debug check calls PTRACE_TRACEME (request 0) and
+                // treats failure as "a debugger already has me"; on a real undebugged process it
+                // succeeds (0), which is also what keeps `/proc/self/status` TracerPid at 0
+                // consistent. Other requests return 0 as unidbg does; nothing is actually traced.
+                ok(0)
+            }
             Sys::ArmCacheflush => {
                 // cacheflush(start, end, flags): the guest wrote code (a packer decrypting itself,
                 // a trampoline). dynarmic keeps a translation cache that only `protect`/`unmap`

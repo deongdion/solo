@@ -117,6 +117,16 @@ fn run(arch: Arch) {
     let status = read_file(&mut emu, libc, "/proc/self/status");
     assert!(status.contains("TracerPid:\t0"), "{status}");
 
+    // ptrace(PTRACE_TRACEME) succeeds (returns 0), as on a real undebugged process: an anti-debug
+    // check that reads a failure as "already traced" must not fire, and it is not left unhandled.
+    let nr_ptrace = if arch == Arch::Arm64 { 117 } else { 26 };
+    let syscall = emu.symbol(libc, "syscall").unwrap();
+    assert_eq!(emu.call(syscall, &[nr_ptrace, 0, 0, 0, 0]).unwrap(), 0);
+    assert!(
+        !emu.summary().unhandled_syscalls.iter().any(|(n, ..)| n.contains("ptrace") || n.contains("117") || n.contains("26")),
+        "ptrace left unhandled"
+    );
+
     // The profile survives a fork.
     let mut fork = emu.fork().unwrap();
     assert_eq!(property(&mut fork, libc, "ro.product.model"), "Nexus 5X");

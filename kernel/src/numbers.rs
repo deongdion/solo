@@ -90,6 +90,7 @@ pub enum Sys {
     Getrusage,
     ArmSetTls,
     ArmCacheflush,
+    Ptrace,
 }
 
 pub fn arm64(number: u64) -> Option<Sys> {
@@ -149,6 +150,7 @@ pub fn arm64(number: u64) -> Option<Sys> {
         166 => Umask,
         167 => Prctl,
         169 => Gettimeofday,
+        117 => Ptrace,
         172 => Getpid,
         173 => Getppid,
         174 => Getuid,
@@ -241,6 +243,7 @@ pub fn arm32(number: u64) -> Option<Sys> {
         220 => Madvise,
         221 => Fcntl,
         224 => Gettid,
+        26 => Ptrace,
         240 => Futex,
         241 => SchedGetaffinity,
         248 => ExitGroup,
