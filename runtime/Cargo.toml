@@ -1,0 +1,16 @@
+[package]
+name = "runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+machine.workspace = true
+backend.workspace = true
+linker.workspace = true
+kernel.workspace = true
+javavm.workspace = true
+java.workspace = true
+device.workspace = true
+inspect.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "backend"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+machine.workspace = true
+dynarmicsys = { workspace = true, optional = true }
+unicornsys = { workspace = true, optional = true }
+
+[features]
+default = ["dynarmic"]
+dynarmic = ["dep:dynarmicsys"]
+# GPL-2.0: local parity runs only, never enabled in a distributed build.
+unicorn = ["dep:unicornsys"]

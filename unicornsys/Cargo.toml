@@ -1,0 +1,7 @@
+[package]
+name = "unicornsys"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

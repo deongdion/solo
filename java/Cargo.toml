@@ -1,0 +1,9 @@
+[package]
+name = "java"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+javavm.workspace = true
