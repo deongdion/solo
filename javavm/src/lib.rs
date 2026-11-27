@@ -215,6 +215,10 @@ pub struct Vm {
     handler: Option<Box<dyn Jni>>,
     models: Vec<Box<dyn Jni>>,
     pub unhandled: BTreeMap<String, UnhandledJni>,
+    /// Method and field lookups (`GetMethodID`/`GetFieldID`) that found nothing, with a count
+    /// (PLAN.md F16). These raise a Java exception, but the summary lists them so a native that
+    /// swallows the exception still shows which member it expected.
+    pub missing_members: BTreeMap<String, u64>,
     pub events: Vec<JniEvent>,
     pub warnings: Vec<String>,
     pub(crate) arena: arena::Arena,
@@ -254,6 +258,7 @@ impl Vm {
             handler,
             models,
             unhandled: self.unhandled.clone(),
+            missing_members: self.missing_members.clone(),
             events: self.events.clone(),
             warnings: self.warnings.clone(),
             arena: self.arena.clone(),
@@ -282,6 +287,7 @@ impl Vm {
             handler: None,
             models: Vec::new(),
             unhandled: BTreeMap::new(),
+            missing_members: BTreeMap::new(),
             events: Vec::new(),
             warnings: Vec::new(),
             arena: arena::Arena::new(low, high),

@@ -413,6 +413,8 @@ pub fn dispatch(vm: &mut Vm, cpu: &mut dyn Cpu, slot: usize) -> Result<Action, J
             match c.vm.method_id(id, &name, &desc, slot == 113) {
                 Some(i) => c.ret(encode_method(i)),
                 None => {
+                    let class = c.vm.class_name(id).to_string();
+                    *c.vm.missing_members.entry(format!("{class}->{name}{desc}")).or_insert(0) += 1;
                     c.throw("java/lang/NoSuchMethodError", &format!("{name}{desc}"));
                     c.ret(0);
                 }
@@ -428,6 +430,8 @@ pub fn dispatch(vm: &mut Vm, cpu: &mut dyn Cpu, slot: usize) -> Result<Action, J
             match c.vm.field_id(id, &name, &desc, slot == 144) {
                 Some(i) => c.ret(encode_field(i)),
                 None => {
+                    let class = c.vm.class_name(id).to_string();
+                    *c.vm.missing_members.entry(format!("{class}->{name}:{desc}")).or_insert(0) += 1;
                     c.throw("java/lang/NoSuchFieldError", &name);
                     c.ret(0);
                 }

@@ -172,6 +172,8 @@ pub struct Summary {
     pub missing_files: Vec<(String, u64)>,
     /// Properties read that the device profile had no value for, most read first.
     pub missing_properties: Vec<(String, u64)>,
+    /// JNI method/field lookups that found nothing ("class->name sig"), most looked up first.
+    pub missing_members: Vec<(String, u64)>,
 }
 
 impl Summary {
@@ -182,6 +184,7 @@ impl Summary {
             && self.unhandled_jni.is_empty()
             && self.missing_files.is_empty()
             && self.missing_properties.is_empty()
+            && self.missing_members.is_empty()
     }
 }
 
@@ -212,6 +215,7 @@ pub(crate) fn summary(emulator: &Emulator) -> Summary {
         jni_warnings: emulator.vm.warnings.clone(),
         missing_files: sort_by_count(&emulator.kernel.missing_files),
         missing_properties: sort_by_count(&emulator.kernel.missing_properties),
+        missing_members: sort_by_count(&emulator.vm.missing_members),
     }
 }
 
@@ -278,6 +282,12 @@ impl fmt::Display for Summary {
             writeln!(f, "missing properties: {}", self.missing_properties.len())?;
             for (name, count) in &self.missing_properties {
                 writeln!(f, "  {name} x{count}")?;
+            }
+        }
+        if !self.missing_members.is_empty() {
+            writeln!(f, "missing JNI members: {}", self.missing_members.len())?;
+            for (member, count) in &self.missing_members {
+                writeln!(f, "  {member} x{count}")?;
             }
         }
         if !self.jni_timeline.is_empty() {

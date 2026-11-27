@@ -232,7 +232,9 @@ Next: 24 h RSS soak result.
 
 - Anti-emulation, `/proc/self/maps` (F15): the maps read like an emulator — a bare soname (`libc.so`), a zero inode/dev and no absolute path. Now a library maps under an absolute device path (bionic and framework libraries under `/system/lib64` or `/system/lib`, everything else the app loaded under `/data/app/<package>-1/lib/<abi>`, `package` from `kernel::Config`), with a stable nonzero inode, a device of `fe:00`, and each later segment's file offset; emulator-internal regions (`[host]`, host data, hook stubs) and anonymous memory show no name instead of leaking an internal label. `runtime/tests/device.rs` checks libc sits at a system path with a nonzero inode, an app library sits under `/data/app`, and no `[host...]` label leaks. Default `process_name` is now `com.example.app`, not `app`. Still open for full maps parity: `[vdso]`/`[vectors]` pages and per-thread stacks.
 
-Next: JNI-lookup misses (F16), deterministic threads check (F18), device trace diff (F17).
+- Failed-lookup report, JNI members (F16): `GetMethodID`/`GetFieldID` that find nothing already raise `NoSuchMethodError`/`NoSuchFieldError`, but a native that swallows the exception leaves no trace; the summary now also lists each missing lookup as `class->name sig` with a count (`Summary::missing_members`, from `Vm::missing_members`, carried by `fork`). With this, F16 covers unresolved symbols, unhandled syscalls, unhandled JNI calls, missing libraries, missing files, unset properties and missing JNI members.
+
+Next: deterministic threads check (F18), device trace diff (F17).
 
 ## Build
 
