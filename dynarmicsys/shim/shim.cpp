@@ -198,30 +198,37 @@ public:
 
     using Reg = Dynarmic::A32::CoprocReg;
 
-    std::optional<Callback> CompileInternalOperation(bool, unsigned, Reg, Reg, Reg, unsigned) override { return std::nullopt; }
+    // A CP15 access the model does not implement must not reach dynarmic's exception path: the x64
+    // backend aborts the host process there (`EmitCoprocessorException`, an ASSERT_FALSE), which no
+    // Rust Result can catch. Instead every unhandled operation becomes a read of 0 or an ignored
+    // write, so a packer that probes an exotic CP15 register (anti-debug, cache or TLB ops) runs on
+    // rather than killing the process. unidbg likewise serves the thread registers and ignores the
+    // rest. Returning a callback (never monostate/nullopt) is what keeps dynarmic off that path.
+    static Callback zero() {
+        return Callback{[](void*, std::uint32_t, std::uint32_t) -> std::uint64_t { return 0; }, std::nullopt};
+    }
+
+    std::optional<Callback> CompileInternalOperation(bool, unsigned, Reg, Reg, Reg, unsigned) override { return zero(); }
 
     CallbackOrAccessOneWord CompileSendOneWord(bool two, unsigned opc1, Reg CRn, Reg CRm, unsigned opc2) override {
-        if (two || opc1 != 0) return std::monostate{};
-        if (CRn == Reg::C13 && CRm == Reg::C0 && opc2 == 2) return &tpidrurw;
-        // c7: CP15ISB (c5, 4), CP15DSB (c10, 4), CP15DMB (c10, 5). A single guest thread needs no barrier.
-        if (CRn == Reg::C7 && ((CRm == Reg::C5 && opc2 == 4) || (CRm == Reg::C10 && (opc2 == 4 || opc2 == 5)))) {
-            return Callback{[](void*, std::uint32_t, std::uint32_t) -> std::uint64_t { return 0; }, std::nullopt};
-        }
-        return std::monostate{};
+        if (!two && opc1 == 0 && CRn == Reg::C13 && CRm == Reg::C0 && opc2 == 2) return &tpidrurw;
+        // Everything else (barriers c7, cache/TLB ops, unknown registers) is a no-op write.
+        return zero();
     }
 
-    CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned, Reg) override { return std::monostate{}; }
+    CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned, Reg) override { return zero(); }
 
     CallbackOrAccessOneWord CompileGetOneWord(bool two, unsigned opc1, Reg CRn, Reg CRm, unsigned opc2) override {
-        if (two || opc1 != 0 || CRn != Reg::C13 || CRm != Reg::C0) return std::monostate{};
-        if (opc2 == 3) return &tpidruro;
-        if (opc2 == 2) return &tpidrurw;
-        return std::monostate{};
+        if (!two && opc1 == 0 && CRn == Reg::C13 && CRm == Reg::C0) {
+            if (opc2 == 3) return &tpidruro;
+            if (opc2 == 2) return &tpidrurw;
+        }
+        return zero();
     }
 
-    CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned, Reg) override { return std::monostate{}; }
-    std::optional<Callback> CompileLoadWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return std::nullopt; }
-    std::optional<Callback> CompileStoreWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return std::nullopt; }
+    CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned, Reg) override { return zero(); }
+    std::optional<Callback> CompileLoadWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return zero(); }
+    std::optional<Callback> CompileStoreWords(bool, bool, Reg, std::optional<std::uint8_t>) override { return zero(); }
 };
 
 }  // namespace
@@ -283,7 +290,14 @@ static DynCpu* create(int32_t is64, uint8_t** page_table, uint32_t address_bits,
         config.enable_cycle_counting = true;
         config.always_little_endian = true;
         config.check_halt_on_memory_access = (flags & DYN_PRECISE_FAULTS) != 0;
-        config.coprocessors[15] = cpu->cp15;
+        // Every coprocessor slot needs a handler: an MCR/MRC/CDP/LDC/STC to a slot left null makes
+        // dynarmic's x64 backend emit the coprocessor-exception path, which is an ASSERT_FALSE that
+        // aborts the host. p10/p11 are VFP (the translator turns those into UDF and never reaches a
+        // coprocessor), so they stay unset. p15 is the real CP15; the rest share the same no-op
+        // instance, so a packer poking an exotic coprocessor reads 0 instead of killing the process.
+        for (int i = 0; i < 16; i++) {
+            if (i != 10 && i != 11) config.coprocessors[i] = cpu->cp15;
+        }
         if (code_cache_size != 0) config.code_cache_size = code_cache_size;
         cpu->jit32 = std::make_unique<Dynarmic::A32::Jit>(config);
         cb->cpu = cpu->jit32.get();

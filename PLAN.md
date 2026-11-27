@@ -223,6 +223,8 @@ Next: 24 h RSS soak result.
 
 - Failed-lookup report (F16, part): the run summary (`Emulator::summary`, `report::Summary`) already lists unresolved symbols, unhandled syscalls, unhandled JNI signatures, missing libraries and the dlopen timeline; it now also lists every file `open`/`stat` that returned ENOENT (`missing_files`) and every property the device profile had no value for (`missing_properties`), each with a count, most-tried first, so a library probing for a device file or an unset property no longer fails silently into an NPE or a wrong 0 much later. Recorded in the kernel and the property hook, carried by `fork`. `runtime/tests/device.rs` asserts both appear. Still open for F16: JNI class/method/field lookups that return not-found.
 
+- dynarmic A32 coprocessor robustness: an arm32 `MCR`/`MRC`/`CDP`/`LDC`/`STC` to a coprocessor slot with no handler made dynarmic's x64 backend emit its coprocessor-exception path, an `ASSERT_FALSE` that aborts the host process (uncatchable by any Rust `Result`); a single packed library doing this (reproduced with the bundled `libhoudini.so`) killed the whole run. Now every CP15 operation the model does not implement, and every other coprocessor slot except the VFP pair p10/p11 (which the translator turns into UDF), serves a read of 0 / ignored write, so the guest runs on or stops with a catchable `Error` like unicorn instead of aborting. libhoudini now returns a clean guest `CPU exception` error on both backends rather than aborting on dynarmic. Found by an exploratory agent run over real packed samples.
+
 Next: JNI-lookup misses (F16), deterministic threads check (F18), device trace diff (F17).
 
 ## Build
