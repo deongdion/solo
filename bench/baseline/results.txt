@@ -1,0 +1,25 @@
+# 2026-11-27T15:16:10 AMD Ryzen 5 5600G with Radeon Graphics java=21.0.12
+latency unicorn2 arm64 run1 exit=0 peak_ws_mb=300.7 | init_ms=883.1 first_call_us=4541.6 | aesCbc16 p50_us=222.1 p99_us=593.7 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=26913.7 p99_us=39721.7 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+latency unicorn2 arm64 run2 exit=0 peak_ws_mb=453.5 | init_ms=892.5 first_call_us=4623.4 | aesCbc16 p50_us=231.3 p99_us=925.9 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=27397.5 p99_us=58533.1 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+latency unicorn2 arm64 run3 exit=0 peak_ws_mb=454.5 | init_ms=897.2 first_call_us=4627.2 | aesCbc16 p50_us=234.5 p99_us=723.6 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=27896.9 p99_us=66576.4 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+throughput unicorn2 arm64 k=1 exit=0 peak_ws_mb=706.7 | init_all_ms=896.2 | instances=1 calls_per_s=3726
+throughput unicorn2 arm64 k=4 exit=0 peak_ws_mb=1040.5 | init_all_ms=1376.1 | instances=4 calls_per_s=16482
+throughput unicorn2 arm64 k=8 exit=0 peak_ws_mb=1241.7 | init_all_ms=1671.0 | instances=8 calls_per_s=30185
+latency unicorn2 arm32 run1 exit=0 peak_ws_mb=492.2 | init_ms=880.7 first_call_us=6659.3 | aesCbc16 p50_us=715.4 p99_us=1102.3 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=95653.7 p99_us=130574.1 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+latency unicorn2 arm32 run2 exit=0 peak_ws_mb=459.1 | init_ms=909.8 first_call_us=7103.5 | aesCbc16 p50_us=710.4 p99_us=987.3 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=110656.2 p99_us=177638.1 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+latency unicorn2 arm32 run3 exit=0 peak_ws_mb=459.2 | init_ms=806.9 first_call_us=5406.4 | aesCbc16 p50_us=744.6 p99_us=1130.9 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=99775.0 p99_us=132677.4 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+throughput unicorn2 arm32 k=1 exit=0 peak_ws_mb=611.9 | init_all_ms=800.0 | instances=1 calls_per_s=1375
+throughput unicorn2 arm32 k=4 exit=0 peak_ws_mb=971 | init_all_ms=1346.8 | instances=4 calls_per_s=1542
+throughput unicorn2 arm32 k=8 exit=0 peak_ws_mb=893 | init_all_ms=2046.3 | instances=8 calls_per_s=1518
+latency dynarmic arm64 run1 exit=0 peak_ws_mb=604.1 | init_ms=1387.1 first_call_us=14744.3 | aesCbc16 p50_us=191.4 p99_us=1233.7 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=6083.1 p99_us=26110.8 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+latency dynarmic arm64 run2 exit=0 peak_ws_mb=637.1 | init_ms=1450.7 first_call_us=12213.9 | aesCbc16 p50_us=197.5 p99_us=987.9 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=6370.3 p99_us=15874.7 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+latency dynarmic arm64 run3 exit=0 peak_ws_mb=606.4 | init_ms=1530.3 first_call_us=12094.6 | aesCbc16 p50_us=197.3 p99_us=858.7 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=5869.4 p99_us=21280.5 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=17768 guest_resident_kb=17768
+throughput dynarmic arm64 k=1 exit=0 peak_ws_mb=727.8 | init_all_ms=1444.3 | instances=1 calls_per_s=4231
+throughput dynarmic arm64 k=4 exit=0 peak_ws_mb=1057 | init_all_ms=2545.3 | instances=4 calls_per_s=8275
+throughput dynarmic arm64 k=8 exit=0 peak_ws_mb=1249.3 | init_all_ms=3561.4 | instances=8 calls_per_s=17605
+latency dynarmic arm32 run1 exit=0 peak_ws_mb=731.5 | init_ms=1282.7 first_call_us=15191.2 | aesCbc16 p50_us=732.8 p99_us=1265.2 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=15382.0 p99_us=18081.2 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+latency dynarmic arm32 run2 exit=0 peak_ws_mb=740 | init_ms=1256.7 first_call_us=13420.0 | aesCbc16 p50_us=716.3 p99_us=1044.8 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=15103.3 p99_us=19274.7 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+latency dynarmic arm32 run3 exit=0 peak_ws_mb=731.9 | init_ms=1215.7 first_call_us=12919.4 | aesCbc16 p50_us=713.3 p99_us=1075.4 n=10000 out=d5e581b4243ddfb6 first_out=d5e581b4243ddfb6 | pbkdf2_1000 p50_us=15273.1 p99_us=19340.9 n=200 out=f6ea85e025a5a03b | guest_allocated_kb=14908 guest_resident_kb=14908
+throughput dynarmic arm32 k=1 exit=0 peak_ws_mb=712.2 | init_all_ms=1647.8 | instances=1 calls_per_s=1150
+throughput dynarmic arm32 k=4 exit=0 peak_ws_mb=1054.6 | init_all_ms=2889.7 | instances=4 calls_per_s=1970
+throughput dynarmic arm32 k=8 exit=0 peak_ws_mb=1070.9 | init_all_ms=3170.1 | instances=8 calls_per_s=1819
