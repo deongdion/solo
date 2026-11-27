@@ -141,6 +141,12 @@ pub struct Kernel {
     pub stderr: Vec<u8>,
     pub file_trace: Vec<String>,
     pub unhandled: BTreeMap<String, Unhandled>,
+    /// Paths the guest tried to open or stat that did not exist, with a count (PLAN.md F16): a
+    /// library probing for files it expects on a real device. Not every miss is a bug, so this is
+    /// a report, not an error.
+    pub missing_files: BTreeMap<String, u64>,
+    /// Properties the guest read that the device profile had no value for, with a count.
+    pub missing_properties: BTreeMap<String, u64>,
     brk_base: u64,
     brk: u64,
     mmap_low: u64,
@@ -176,6 +182,8 @@ impl Kernel {
             stderr: Vec::new(),
             file_trace: Vec::new(),
             unhandled: BTreeMap::new(),
+            missing_files: BTreeMap::new(),
+            missing_properties: BTreeMap::new(),
             brk_base,
             brk: brk_base,
             mmap_low,
@@ -974,6 +982,7 @@ impl Kernel {
             }
             None => {
                 self.trace(format!("open {path} flags={flags:#x} -> ENOENT"));
+                self.note_missing_file(&path);
                 Ok(Err(ENOENT))
             }
         }
@@ -1113,6 +1122,7 @@ impl Kernel {
                 Some(Node::Directory) => (S_IFDIR | 0o755, 4096),
                 None => {
                     self.trace(format!("stat {path} -> ENOENT"));
+                    self.note_missing_file(path);
                     return Ok(Err(ENOENT));
                 }
             },
@@ -1168,6 +1178,12 @@ impl Kernel {
         }
         cpu.memory_mut().write(out, &b)?;
         Ok(())
+    }
+
+    /// Records a path the guest looked for and did not find. Skips the process-mirror files the
+    /// runtime regenerates (always present) so only genuine misses are reported.
+    fn note_missing_file(&mut self, path: &str) {
+        *self.missing_files.entry(path.to_string()).or_insert(0) += 1;
     }
 
     /// `/proc/self/maps` text for the current memory map.

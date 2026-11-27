@@ -168,6 +168,10 @@ pub struct Summary {
     /// JNI_OnLoad, RegisterNatives and FatalError, in order of the calls that made them.
     pub jni_timeline: Vec<String>,
     pub jni_warnings: Vec<String>,
+    /// Paths opened or stat'd that did not exist, most tried first (PLAN.md F16).
+    pub missing_files: Vec<(String, u64)>,
+    /// Properties read that the device profile had no value for, most read first.
+    pub missing_properties: Vec<(String, u64)>,
 }
 
 impl Summary {
@@ -176,6 +180,8 @@ impl Summary {
             && self.missing_libraries.is_empty()
             && self.unresolved_symbols.is_empty()
             && self.unhandled_jni.is_empty()
+            && self.missing_files.is_empty()
+            && self.missing_properties.is_empty()
     }
 }
 
@@ -204,7 +210,16 @@ pub(crate) fn summary(emulator: &Emulator) -> Summary {
             .collect(),
         jni_timeline: jni_timeline(emulator),
         jni_warnings: emulator.vm.warnings.clone(),
+        missing_files: sort_by_count(&emulator.kernel.missing_files),
+        missing_properties: sort_by_count(&emulator.kernel.missing_properties),
     }
+}
+
+/// A count map as a vector, most frequent first, ties broken by name.
+fn sort_by_count(map: &std::collections::BTreeMap<String, u64>) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
 }
 
 fn jni_timeline(emulator: &Emulator) -> Vec<String> {
@@ -252,6 +267,18 @@ impl fmt::Display for Summary {
         writeln!(f, "unhandled JNI: {}", self.unhandled_jni.len())?;
         for (signature, count, caller) in &self.unhandled_jni {
             writeln!(f, "  {signature} x{count} (first from {caller})")?;
+        }
+        if !self.missing_files.is_empty() {
+            writeln!(f, "missing files: {}", self.missing_files.len())?;
+            for (path, count) in &self.missing_files {
+                writeln!(f, "  {path} x{count}")?;
+            }
+        }
+        if !self.missing_properties.is_empty() {
+            writeln!(f, "missing properties: {}", self.missing_properties.len())?;
+            for (name, count) in &self.missing_properties {
+                writeln!(f, "  {name} x{count}")?;
+            }
         }
         if !self.jni_timeline.is_empty() {
             writeln!(f, "JNI timeline:")?;

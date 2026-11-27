@@ -61,6 +61,17 @@ fn read_file(emu: &mut Emulator, libc: usize, path: &str) -> String {
     String::from_utf8_lossy(&data).into_owned()
 }
 
+/// open() a path, returning the fd (which may be a negative errno); does not read.
+fn read_or_fail(emu: &mut Emulator, libc: usize, path: &str) -> u64 {
+    let malloc = emu.symbol(libc, "malloc").unwrap();
+    let path_ptr = emu.call(malloc, &[256]).unwrap();
+    let mut bytes = path.as_bytes().to_vec();
+    bytes.push(0);
+    emu.cpu.memory_mut().write(path_ptr, &bytes).unwrap();
+    let open = emu.symbol(libc, "open").unwrap();
+    emu.call(open, &[path_ptr, 0]).unwrap()
+}
+
 fn run(arch: Arch) {
     let Some((mut emu, libc)) = emulator(arch) else { return };
     let parch = if arch == Arch::Arm64 { profile::Arch::Arm64 } else { profile::Arch::Arm32 };
@@ -76,8 +87,24 @@ fn run(arch: Arch) {
     );
     let abi = property(&mut emu, libc, "ro.product.cpu.abi");
     assert_eq!(abi, if arch == Arch::Arm64 { "arm64-v8a" } else { "armeabi-v7a" });
-    // An unset property returns the empty string and length 0 (bionic's contract).
+    // An unset property returns the empty string and length 0 (bionic's contract), and the read
+    // is recorded for the F16 report so a missing stub does not fail silently.
     assert_eq!(property(&mut emu, libc, "ro.nonexistent.key"), "");
+    let summary = emu.summary();
+    assert!(
+        summary.missing_properties.iter().any(|(k, _)| k == "ro.nonexistent.key"),
+        "missing property not reported: {:?}",
+        summary.missing_properties
+    );
+
+    // Opening a file that does not exist is also recorded.
+    let _ = read_or_fail(&mut emu, libc, "/data/data/com.example/does_not_exist");
+    let summary = emu.summary();
+    assert!(
+        summary.missing_files.iter().any(|(p, _)| p.contains("does_not_exist")),
+        "missing file not reported: {:?}",
+        summary.missing_files
+    );
 
     let cpuinfo = read_file(&mut emu, libc, "/proc/cpuinfo");
     assert!(cpuinfo.contains("Hardware\t: Qualcomm Technologies, Inc MSM8992"), "{cpuinfo}");

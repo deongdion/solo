@@ -40,8 +40,14 @@ impl Emulator {
         // terminated) into `value` and returns its length, or 0 when the property is unset.
         let hook = Hook::on_enter(move |emu, call| {
             let name = emu.cpu.memory().read_cstr(call.arg(emu, 0)?, 256)?;
-            let name = String::from_utf8_lossy(&name);
-            let value = profile.get(&name).unwrap_or("");
+            let name = String::from_utf8_lossy(&name).into_owned();
+            let value = match profile.get(&name) {
+                Some(value) => value,
+                None => {
+                    *emu.kernel.missing_properties.entry(name).or_insert(0) += 1;
+                    ""
+                }
+            };
             let out = call.arg(emu, 1)?;
             let mut bytes = value.as_bytes();
             if bytes.len() > PROP_VALUE_MAX {
