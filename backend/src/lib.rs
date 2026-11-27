@@ -199,6 +199,12 @@ pub trait Cpu: Send {
     fn invalidate(&mut self, address: u64, length: u64);
     /// Clears the exclusive monitor (LDREX/LDXR reservations), as a thread switch must.
     fn clear_exclusive(&mut self) {}
+    /// From now on a memory fault must stop at the faulting instruction with the registers as
+    /// they were before it, as delivering SIGSEGV to a guest handler needs. A no-op for backends
+    /// that always stop there.
+    fn require_precise_faults(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
     /// The handle that interrupts this CPU from another thread.
     fn interrupt(&self) -> Interrupt;
     /// A new CPU of the same kind and options with a copy of this one's memory and registers.
@@ -279,6 +285,13 @@ pub fn restore_state(to: &mut dyn Cpu, from: &dyn Cpu) -> Result<(), Error> {
     copy_state(from, to)
 }
 
+/// `Stop::Exception` kind of a breakpoint instruction (BRK, BKPT), as dynarmic numbers it on both
+/// architectures.
+pub const EXCEPTION_BREAKPOINT: u32 = 8;
+
+/// Offset in the trampoline page of the rt_sigreturn stub (ARM state on A32).
+pub const SIGRETURN_STUB_OFFSET: u64 = 0x20;
+
 /// Guest address of the return trampoline page.
 pub const TRAMPOLINE: u64 = 0xffff_0000;
 
@@ -289,8 +302,14 @@ pub const TRAMPOLINE: u64 = 0xffff_0000;
 /// pthread code calls.
 pub fn trampoline_code(arch: Arch) -> Vec<u8> {
     match arch {
-        // svc #RETURN_SVC
-        Arch::Arm64 => (0xd400_0001u32 | (RETURN_SVC << 5)).to_le_bytes().to_vec(),
+        Arch::Arm64 => {
+            let mut code = vec![0u8; SIGRETURN_STUB_OFFSET as usize + 8];
+            // svc #RETURN_SVC
+            code[..4].copy_from_slice(&(0xd400_0001u32 | (RETURN_SVC << 5)).to_le_bytes());
+            // Signal return for handlers without sa_restorer: mov x8, #139 (rt_sigreturn); svc #0
+            code[SIGRETURN_STUB_OFFSET as usize..].copy_from_slice(&[0x68, 0x11, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4]);
+            code
+        }
         Arch::Arm32 => {
             let mut page = vec![0u8; machine::PAGE_SIZE as usize];
             let mut put = |offset: usize, words: &[u32]| {
@@ -300,6 +319,10 @@ pub fn trampoline_code(arch: Arch) -> Vec<u8> {
             };
             // svc #RETURN_SVC (A32 encoding); callers return here in ARM state.
             put(0, &[0xef00_0000 | RETURN_SVC]);
+            // Signal return for handlers without sa_restorer: mov r7, #173 (rt_sigreturn); svc #0
+            put(SIGRETURN_STUB_OFFSET as usize, &[0xe3a0_70ad, 0xef00_0000]);
+            // The same for the older frame of handlers without SA_SIGINFO: mov r7, #119 (sigreturn); svc #0
+            put(SIGRETURN_STUB_OFFSET as usize + 8, &[0xe3a0_7077, 0xef00_0000]);
             // 0xffff0fa0 __kuser_memory_barrier: dmb ish; bx lr
             put(0xfa0, &[0xf57f_f05b, 0xe12f_ff1e]);
             // 0xffff0fc0 __kuser_cmpxchg(oldval r0, newval r1, ptr r2): r0 = 0 and C set on success.

@@ -33,6 +33,7 @@ fn build(arch: Arch, backend: BackendKind) -> Emulator {
         options.kernel.echo_output = false;
         options.kernel.process_name = "org.telegram.messenger".into();
         options.budget = 10_000_000_000;
+        options.precise_faults = std::env::var_os("TMBENCH_PRECISE").is_some();
         let mut emu = Emulator::new(options).expect("emulator");
         let file = resources().join("test/resources/example_binaries").join(abi).join("libtmessages.29.so");
         let module = emu.load(file.to_str().unwrap()).unwrap_or_else(|e| panic!("load: {e}"));

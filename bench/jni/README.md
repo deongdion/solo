@@ -76,5 +76,18 @@ enabled; without the dispatcher even part 1 never returns), `n = 4`, `rounds = 1
 The runtime's interleaving is deterministic: two runs make the same number of thread switches
 (`runtime/tests/threads.rs`).
 
+## Signals (PLAN.md M3)
+
+`Java_fix_Native_signals()` installs a `SA_SIGINFO` handler for SIGUSR1 and `raise`s it twice;
+installs a SIGSEGV handler that `siglongjmp`s out and probes a stack byte, address 16 and address
+32 with a read (1 = readable); then blocks SIGUSR2, raises it, reads `sigpending`, and unblocks it.
+`SignalRun.java` runs it under unidbg (dynarmic), 120 s limit:
+
+| | output |
+|---|---|
+| unidbg arm64 | `usr1 0 signo 0; probe 1 1 1; blocked 0 pending 0 delivered 0` |
+| unidbg armv7 | no result within 120 s (the SIGSEGV repeats) |
+| Rust runtime (both architectures, dynarmic and unicorn) | `usr1 2 signo 10; probe 1 0 0; blocked 0 pending 1 delivered 1` (`expected_signals.txt`) |
+
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).

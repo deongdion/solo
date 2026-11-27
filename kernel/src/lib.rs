@@ -5,10 +5,11 @@
 //! never turns a guest mistake into a host exception (see PLAN.md F12).
 
 pub mod numbers;
+pub mod signals;
 pub mod threads;
 pub mod vfs;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use backend::{Arch, Cpu, Reg};
@@ -36,6 +37,7 @@ pub mod errno {
     pub const ENOTDIR: i64 = 20;
     pub const EISDIR: i64 = 21;
     pub const EINVAL: i64 = 22;
+    pub const ESRCH: i64 = 3;
     pub const ENOTTY: i64 = 25;
     pub const ESPIPE: i64 = 29;
     pub const ERANGE: i64 = 34;
@@ -69,6 +71,8 @@ pub enum Outcome {
     Exit(i32),
     /// Every guest thread waits and none can time out.
     Deadlock,
+    /// A signal whose default action ends the process.
+    Killed(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -135,12 +139,13 @@ pub struct Kernel {
     mmap_low: u64,
     mmap_high: u64,
     random: u64,
-    sigactions: HashMap<u64, Vec<u8>>,
+    pub signals: signals::Signals,
     cwd: String,
     pub threads: threads::Threads,
     /// Set by a syscall that switched threads: the result register belongs to another thread.
     switched: bool,
     deadlock: bool,
+    killed: Option<u32>,
 }
 
 impl Kernel {
@@ -166,11 +171,12 @@ impl Kernel {
             mmap_low,
             mmap_high,
             random,
-            sigactions: HashMap::new(),
+            signals: signals::Signals::new(backend::TRAMPOLINE + backend::SIGRETURN_STUB_OFFSET),
             cwd: "/".into(),
             threads: threads::Threads::new(pid),
             switched: false,
             deadlock: false,
+            killed: None,
         }
     }
 
@@ -205,12 +211,16 @@ impl Kernel {
         };
         self.switched = false;
         self.deadlock = false;
+        self.killed = None;
         let result = match sys {
             Some(sys) => self.dispatch(cpu, sys, &args)?,
             None => Err(ENOSYS),
         };
         if self.deadlock {
             return Ok(Outcome::Deadlock);
+        }
+        if let Some(signo) = self.killed {
+            return Ok(Outcome::Killed(signo));
         }
         if self.switched {
             if self.config.trace_syscalls {
@@ -252,6 +262,39 @@ impl Kernel {
             threads::Switch::Switched => self.switched = true,
             threads::Switch::Deadlock => self.deadlock = true,
         }
+    }
+
+    /// A handler for a memory fault signal resumes from the faulting instruction's state (a
+    /// probe's siglongjmp, a guard page handler), so the backend must stop exactly there from now
+    /// on. It stays so after the handler is removed.
+    fn fault_handler_installed(cpu: &mut dyn Cpu, signo: u32, action: &signals::Action) -> Result<(), Error> {
+        if matches!(signo, signals::SIGSEGV | signals::SIGBUS) && action.handler > 1 {
+            cpu.require_precise_faults()?;
+        }
+        Ok(())
+    }
+
+    /// Delivers the lowest pending, unblocked signal of the running thread, if any.
+    pub fn deliver_pending(&mut self, cpu: &mut dyn Cpu) -> Result<Option<Outcome>, Error> {
+        let tid = self.threads.current;
+        let Some(signo) = self.signals.take_deliverable(tid) else { return Ok(None) };
+        Ok(match self.signals.deliver(cpu, tid, signo, signals::SI_TKILL, 0, self.config.pid)? {
+            signals::Delivery::Terminate => Some(Outcome::Killed(signo)),
+            _ => None,
+        })
+    }
+
+    /// Sends a fault signal to the running thread if it has a handler for it; false otherwise
+    /// (the runtime then reports a crash).
+    pub fn fault_signal(&mut self, cpu: &mut dyn Cpu, signo: u32, code: i32, address: u64) -> Result<bool, Error> {
+        let tid = self.threads.current;
+        if self.config.trace_syscalls {
+            eprintln!("[signal] {signo} code {code} address {address:#x} at {:#x} sp {:#x}", cpu.pc(), cpu.reg(Reg::Sp));
+        }
+        if !self.signals.catches(tid, signo) {
+            return Ok(false);
+        }
+        Ok(self.signals.deliver(cpu, tid, signo, code, address, 0)? == signals::Delivery::Handler)
     }
 
     /// Gives the CPU to another runnable thread after an instruction slice.
@@ -326,6 +369,7 @@ impl Kernel {
                     return Ok(Err(EAGAIN));
                 }
                 let tid = self.threads.spawn(cpu, flags, a[1], a[2], a[3], a[4])?;
+                self.signals.inherit(self.threads.current, tid);
                 ok(tid as i64)
             }
             Sys::SchedYield | Sys::Nanosleep if self.threads.count() > 1 => {
@@ -335,30 +379,181 @@ impl Kernel {
                 ok(0)
             }
             Sys::Exit if self.threads.current != self.threads.main => {
+                self.signals.forget_thread(self.threads.current);
                 let switch = self.threads.exit(cpu)?;
                 self.after_switch(switch);
                 ok(0)
             }
-            Sys::SetRobustList | Sys::RtSigprocmask | Sys::Sigaltstack | Sys::SchedYield | Sys::Setpriority | Sys::Msync
+            Sys::SetRobustList | Sys::SchedYield | Sys::Setpriority | Sys::Msync
             | Sys::Fsync | Sys::ArmCacheflush | Sys::Setrlimit => ok(0),
             Sys::Getpriority => ok(20),
             Sys::Umask => ok(0o022),
             Sys::Madvise => ok(0),
             Sys::Exit | Sys::ExitGroup => Ok(Ok(None)),
-            Sys::Kill | Sys::Tgkill => {
-                let signal = if sys == Sys::Kill { a[1] } else { a[2] };
-                if signal == 0 { ok(0) } else { Ok(Ok(None)) }
+            Sys::Kill | Sys::Tgkill | Sys::Tkill => {
+                let (target, signo) = match sys {
+                    // A process-directed signal to this process goes to the calling thread.
+                    Sys::Kill => {
+                        let pid = sa[0];
+                        if pid != self.config.pid as i64 && pid != 0 && pid != -1 {
+                            return Ok(Err(ESRCH));
+                        }
+                        (self.threads.current, a[1] as u32)
+                    }
+                    Sys::Tgkill => {
+                        if sa[0] != self.config.pid as i64 {
+                            return Ok(Err(ESRCH));
+                        }
+                        (a[1] as u32, a[2] as u32)
+                    }
+                    _ => (a[0] as u32, a[1] as u32),
+                };
+                if !self.threads.threads.contains_key(&target) {
+                    return Ok(Err(ESRCH));
+                }
+                if signo > 64 {
+                    return Ok(Err(EINVAL));
+                }
+                if signo == 0 {
+                    return ok(0);
+                }
+                let code = if sys == Sys::Kill { signals::SI_USER } else { signals::SI_TKILL };
+                if target != self.threads.current {
+                    self.signals.raise_pending(target, signo);
+                    return ok(0);
+                }
+                // The interrupted context returns 0 from this syscall.
+                cpu.set_reg(Reg::General(0), 0);
+                match self.signals.deliver(cpu, target, signo, code, 0, self.config.pid)? {
+                    signals::Delivery::Handler => self.switched = true,
+                    signals::Delivery::Terminate => self.killed = Some(signo),
+                    signals::Delivery::Ignored | signals::Delivery::Pending => {}
+                }
+                ok(0)
             }
             Sys::RtSigaction => {
-                let size = if is64 { 32 } else { 20 };
+                let arch = cpu.arch();
+                let size = signals::Signals::action_size(arch);
+                let signo = a[0] as u32;
+                if !(1..=64).contains(&signo) {
+                    return Ok(Err(EINVAL));
+                }
                 if a[2] != 0 {
-                    let old = self.sigactions.get(&a[0]).cloned().unwrap_or_else(|| vec![0; size]);
+                    let old = signals::Signals::encode_action(arch, &self.signals.action(signo));
                     cpu.memory_mut().write(a[2], &old)?;
                 }
                 if a[1] != 0 {
                     let new = cpu.memory().read_vec(a[1], size)?;
-                    self.sigactions.insert(a[0], new);
+                    let action = signals::Signals::decode_action(arch, &new);
+                    if !self.signals.set_action(signo, action) {
+                        return Ok(Err(EINVAL));
+                    }
+                    Self::fault_handler_installed(cpu, signo, &action)?;
                 }
+                ok(0)
+            }
+            Sys::RtSigprocmask => {
+                let tid = self.threads.current;
+                let old = self.signals.mask(tid);
+                if a[2] != 0 {
+                    cpu.memory_mut().write_u64(a[2], old)?;
+                }
+                if a[1] != 0 {
+                    let set = cpu.memory().read_u64(a[1])?;
+                    let mask = match a[0] {
+                        0 => old | set,
+                        1 => old & !set,
+                        2 => set,
+                        _ => return Ok(Err(EINVAL)),
+                    };
+                    self.signals.set_mask(tid, mask);
+                }
+                ok(0)
+            }
+            Sys::RtSigpending => {
+                let pending = self.signals.pending(self.threads.current);
+                cpu.memory_mut().write_u64(a[0], pending)?;
+                ok(0)
+            }
+            Sys::Sigaltstack => {
+                let tid = self.threads.current;
+                let w = if is64 { 8 } else { 4 };
+                if a[1] != 0 {
+                    let old = self.signals.alt_stack(tid);
+                    let sp = cpu.reg(Reg::Sp);
+                    let on = old.flags & 2 == 0 && sp > old.sp && sp <= old.sp + old.size;
+                    let flags = if old.flags & 2 != 0 { 2 } else if on { 1 } else { 0 };
+                    let m = cpu.memory_mut();
+                    if is64 {
+                        m.write_u64(a[1], old.sp)?;
+                        m.write_u32(a[1] + 8, flags)?;
+                        m.write_u64(a[1] + 16, old.size)?;
+                    } else {
+                        m.write_u32(a[1], old.sp as u32)?;
+                        m.write_u32(a[1] + 4, flags)?;
+                        m.write_u32(a[1] + 8, old.size as u32)?;
+                    }
+                }
+                if a[0] != 0 {
+                    let m = cpu.memory();
+                    let (sp, flags, size) = if is64 {
+                        (m.read_u64(a[0])?, m.read_u32(a[0] + 8)?, m.read_u64(a[0] + 16)?)
+                    } else {
+                        (m.read_u32(a[0])? as u64, m.read_u32(a[0] + w)?, m.read_u32(a[0] + 2 * w)? as u64)
+                    };
+                    self.signals.set_alt_stack(tid, signals::AltStack { sp, size, flags });
+                }
+                ok(0)
+            }
+            Sys::RtSigreturn | Sys::Sigreturn => {
+                self.signals.sigreturn(cpu, self.threads.current, sys == Sys::RtSigreturn)?;
+                if self.config.trace_syscalls {
+                    eprintln!("[signal] return to {:#x} sp {:#x} lr {:#x} flags {:#x} r0 {:#x}", cpu.pc(), cpu.reg(Reg::Sp), cpu.reg(Reg::Lr), cpu.reg(Reg::Flags), cpu.reg(Reg::General(0)));
+                }
+                self.switched = true;
+                ok(0)
+            }
+            // The ARM sigaction(2), sigprocmask(2) and sigpending(2) with 32-bit masks.
+            Sys::Sigaction => {
+                let signo = a[0] as u32;
+                if !(1..=64).contains(&signo) {
+                    return Ok(Err(EINVAL));
+                }
+                if a[2] != 0 {
+                    let old = signals::Signals::encode_old_action(&self.signals.action(signo));
+                    cpu.memory_mut().write(a[2], &old)?;
+                }
+                if a[1] != 0 {
+                    let new = cpu.memory().read_vec(a[1], 16)?;
+                    let action = signals::Signals::decode_old_action(&new);
+                    if !self.signals.set_action(signo, action) {
+                        return Ok(Err(EINVAL));
+                    }
+                    Self::fault_handler_installed(cpu, signo, &action)?;
+                }
+                ok(0)
+            }
+            Sys::Sigprocmask => {
+                let tid = self.threads.current;
+                let old = self.signals.mask(tid);
+                if a[2] != 0 {
+                    cpu.memory_mut().write_u32(a[2], old as u32)?;
+                }
+                if a[1] != 0 {
+                    let set = cpu.memory().read_u32(a[1])? as u64;
+                    let mask = match a[0] {
+                        0 => old | set,
+                        1 => old & !set,
+                        2 => (old & !0xffff_ffff) | set,
+                        _ => return Ok(Err(EINVAL)),
+                    };
+                    self.signals.set_mask(tid, mask);
+                }
+                ok(0)
+            }
+            Sys::Sigpending => {
+                let pending = self.signals.pending(self.threads.current);
+                cpu.memory_mut().write_u32(a[0], pending as u32)?;
                 ok(0)
             }
             Sys::ArmSetTls => {

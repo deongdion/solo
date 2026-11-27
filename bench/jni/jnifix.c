@@ -300,3 +300,70 @@ JNIEXPORT jstring JNICALL Java_fix_Native_threads(JNIEnv* env, jclass self, jint
     say("\n");
     return (*env)->NewStringUTF(env, out);
 }
+
+// Signals: a SA_SIGINFO handler run by raise(), a SIGSEGV handler that leaves a faulting read
+// with siglongjmp (the usual memory probe), and a blocked signal that stays pending until
+// unblocked.
+#include <signal.h>
+
+static volatile int usr1_count, usr1_signo, usr2_count;
+static sigjmp_buf probe_env;
+
+static void on_usr1(int signal, siginfo_t* info, void* context) {
+    usr1_count++;
+    usr1_signo = info->si_signo;
+}
+
+static void on_usr2(int signal) {
+    usr2_count++;
+}
+
+static void on_segv(int signal) {
+    siglongjmp(probe_env, 1);
+}
+
+static int probe(const volatile char* address) {
+    if (sigsetjmp(probe_env, 1) != 0) return 0;
+    (void)*address;
+    return 1;
+}
+
+JNIEXPORT jstring JNICALL Java_fix_Native_signals(JNIEnv* env, jclass self) {
+    used = 0;
+    usr1_count = 0;
+    usr2_count = 0;
+    struct sigaction action = {0};
+    action.sa_sigaction = on_usr1;
+    action.sa_flags = SA_SIGINFO;
+    sigaction(SIGUSR1, &action, 0);
+    raise(SIGUSR1);
+    raise(SIGUSR1);
+    say("usr1 %d signo %d;", usr1_count, usr1_signo);
+
+    struct sigaction segv = {0};
+    segv.sa_handler = on_segv;
+    struct sigaction old;
+    sigaction(SIGSEGV, &segv, &old);
+    char local = 1;
+    int mapped = probe(&local);
+    int unmapped = probe((const char*)16);
+    int again = probe((const char*)32);
+    sigaction(SIGSEGV, &old, 0);
+    say(" probe %d %d %d;", mapped, unmapped, again);
+
+    struct sigaction usr2 = {0};
+    usr2.sa_handler = on_usr2;
+    sigaction(SIGUSR2, &usr2, 0);
+    sigset_t set, pending;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &set, 0);
+    raise(SIGUSR2);
+    int while_blocked = usr2_count;
+    sigemptyset(&pending);
+    sigpending(&pending);
+    int is_pending = sigismember(&pending, SIGUSR2);
+    sigprocmask(SIG_UNBLOCK, &set, 0);
+    say(" blocked %d pending %d delivered %d\n", while_blocked, is_pending, usr2_count);
+    return (*env)->NewStringUTF(env, out);
+}

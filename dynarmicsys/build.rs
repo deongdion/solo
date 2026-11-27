@@ -9,12 +9,37 @@ use std::path::{Path, PathBuf};
 
 const LIBS: [&str; 5] = ["dynarmic", "mcl", "fmt", "Zydis", "Zycore"];
 
+/// Fixes to the pinned dynarmic, applied to the checkout before it is built: (file, original,
+/// replacement). Applying is idempotent; a file that has neither text fails the build.
+const PATCHES: [(&str, &str, &str); 1] = [(
+    // Dead code elimination treated memory reads as free of side effects, so a load whose value
+    // is unused (`ldrb wzr, [x0]`, the usual memory probe) was removed and never faulted.
+    "src/dynarmic/ir/opt/dead_code_elimination_pass.cpp",
+    "if (!inst.HasUses() && !inst.MayHaveSideEffects()) {",
+    "if (!inst.HasUses() && !inst.MayHaveSideEffects() && !inst.IsMemoryRead()) {",
+)];
+
+fn apply_patches(source: &Path) {
+    for (file, original, replacement) in PATCHES {
+        let path = source.join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        if text.contains(replacement) {
+            continue;
+        }
+        assert!(text.contains(original), "{}: patch does not apply (dynarmic changed?)", path.display());
+        fs::write(&path, text.replacen(original, replacement, 1)).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+}
+
 fn main() {
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let source = root.join("dynarmic");
     let shim = root.join("shim");
     println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-env-changed=DYNARMIC_BOOST_INCLUDE");
+
+    apply_patches(&source);
 
     let boost = env::var("DYNARMIC_BOOST_INCLUDE")
         .expect("DYNARMIC_BOOST_INCLUDE must point at a Boost source tree (the directory containing boost/)");

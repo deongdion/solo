@@ -15,7 +15,7 @@ pub mod report;
 use std::path::PathBuf;
 
 use backend::{Arch, Cpu, Reg, Stop, TRAMPOLINE};
-use kernel::{Config as KernelConfig, Kernel, Outcome};
+use kernel::{Config as KernelConfig, Kernel, Outcome, signals};
 use linker::{Linker, Resolver};
 use machine::Perms;
 
@@ -75,6 +75,9 @@ pub enum Error {
     /// Every guest thread waits on a futex and none can time out.
     #[error("deadlock: every guest thread waits")]
     Deadlock,
+    /// A signal whose default action ends the process (no handler installed).
+    #[error("killed by signal {0}")]
+    Killed(u32),
     #[error("{error} (called from {caller})")]
     Jni { error: javavm::JniError, caller: String },
     /// A Java exception was pending when a call from the host returned.
@@ -427,6 +430,9 @@ impl Emulator {
             if interrupt.take() {
                 return Err(Error::Interrupted);
             }
+            if let Some(kernel::Outcome::Killed(signo)) = self.kernel.deliver_pending(self.cpu.as_mut())? {
+                return Err(Error::Killed(signo));
+            }
             // With several guest threads, run in slices and rotate between them.
             let threaded = self.kernel.threads.count() > 1;
             let slice = if threaded { remaining.min(THREAD_SLICE) } else { remaining };
@@ -448,6 +454,7 @@ impl Emulator {
                     Outcome::Continue => {}
                     Outcome::Exit(code) => return Err(Error::Exited(code)),
                     Outcome::Deadlock => return Err(Error::Deadlock),
+                    Outcome::Killed(signo) => return Err(Error::Killed(signo)),
                 },
                 Stop::Svc(imm) if imm >= HOST_BASE => {
                     let index = (imm - HOST_BASE) as usize;
@@ -469,8 +476,21 @@ impl Emulator {
                 // over from an interrupt already handled just resumes.
                 Stop::Halted if interrupt.take() => return Err(Error::Interrupted),
                 Stop::Halted => {}
-                Stop::Fault { address, write } => return Err(self.crash(StopKind::Fault { address, write })),
-                Stop::Exception { pc, kind } => return Err(self.crash(StopKind::Exception { pc, kind })),
+                // A fault goes to the guest's handler for it, if it installed one.
+                Stop::Fault { address, write } => {
+                    let code = if self.cpu.memory().mapping_at(address).is_some() { signals::SEGV_ACCERR } else { signals::SEGV_MAPERR };
+                    if !self.kernel.fault_signal(self.cpu.as_mut(), signals::SIGSEGV, code, address)? {
+                        return Err(self.crash(StopKind::Fault { address, write }));
+                    }
+                }
+                Stop::Exception { pc, kind } => {
+                    let (signo, code) =
+                        if kind == backend::EXCEPTION_BREAKPOINT { (signals::SIGTRAP, signals::TRAP_BRKPT) } else { (signals::SIGILL, signals::ILL_ILLOPC) };
+                    self.cpu.set_pc(pc);
+                    if !self.kernel.fault_signal(self.cpu.as_mut(), signo, code, pc)? {
+                        return Err(self.crash(StopKind::Exception { pc, kind }));
+                    }
+                }
             }
         }
     }

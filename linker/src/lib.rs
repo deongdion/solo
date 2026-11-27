@@ -255,8 +255,17 @@ impl Linker {
         }
         let mut pages: Vec<(u64, u8)> = perms.into_iter().collect();
         pages.sort();
+        // One call per run of adjacent pages with the same permissions: unicorn splits a region
+        // on every protect and aborts past about a thousand regions on arm32 (1 KiB QEMU pages).
+        let mut runs: Vec<(u64, u64, u8)> = Vec::new();
         for (page, bits) in pages {
-            cpu.protect(page, machine::PAGE_SIZE, Perms::from_bits(bits))?;
+            match runs.last_mut() {
+                Some((start, length, b)) if *b == bits && *start + *length == page => *length += machine::PAGE_SIZE,
+                _ => runs.push((page, machine::PAGE_SIZE, bits)),
+            }
+        }
+        for (start, length, bits) in runs {
+            cpu.protect(start, length, Perms::from_bits(bits))?;
         }
 
         let mut module = Module {

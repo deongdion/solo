@@ -45,6 +45,34 @@ impl Drop for Dynarmic {
     }
 }
 
+fn new_jit(arch: Arch, memory: &mut Memory, events: &mut Events, code_cache: u64, precise_faults: bool) -> Result<*mut sys::DynCpu, Error> {
+    let hooks = sys::DynHooks {
+        user: (events as *mut Events).cast(),
+        on_svc: Some(on_svc),
+        on_exception: Some(on_exception),
+        on_fault: Some(on_fault),
+        can_execute: Some(can_execute),
+    };
+    let is64 = (arch == Arch::Arm64) as i32;
+    let flags = if precise_faults { sys::DYN_PRECISE_FAULTS } else { 0 };
+    // SAFETY: the page table and events are boxed and outlive the handle (field order); dyn_new
+    // copies the hooks.
+    let raw = unsafe { sys::dyn_new(is64, memory.page_table(), arch.address_bits(), code_cache, flags, &hooks) };
+    if raw.is_null() {
+        return Err(Error::Backend("dyn_new failed".into()));
+    }
+    Ok(raw)
+}
+
+fn set_halt_target(interrupt: &crate::Interrupt, raw: *mut sys::DynCpu) {
+    let target = HaltTarget(raw);
+    interrupt.set_halt(Some(Box::new(move || {
+        let target = &target;
+        // SAFETY: see HaltTarget.
+        unsafe { sys::dyn_halt(target.0) }
+    })));
+}
+
 impl Drop for Handle {
     fn drop(&mut self) {
         // SAFETY: created by dyn_new and freed once.
@@ -101,26 +129,9 @@ impl Dynarmic {
         // dynarmic's Exception::NoExecuteFault, as declared in its A64 and A32 config headers.
         let no_execute = if arch == Arch::Arm64 { 9 } else { 12 };
         let mut events = Box::new(Events { stop: None, memory: &*memory, no_execute });
-        let hooks = sys::DynHooks {
-            user: (&mut *events as *mut Events).cast(),
-            on_svc: Some(on_svc),
-            on_exception: Some(on_exception),
-            on_fault: Some(on_fault),
-            can_execute: Some(can_execute),
-        };
-        let is64 = (arch == Arch::Arm64) as i32;
-        // SAFETY: the page table and hooks outlive the handle (field order).
-        let raw = unsafe { sys::dyn_new(is64, memory.page_table(), arch.address_bits(), code_cache, if precise_faults { sys::DYN_PRECISE_FAULTS } else { 0 }, &hooks) };
-        if raw.is_null() {
-            return Err(Error::Backend("dyn_new failed".into()));
-        }
+        let raw = new_jit(arch, &mut memory, &mut events, code_cache, precise_faults)?;
         let interrupt = crate::Interrupt::default();
-        let target = HaltTarget(raw);
-        interrupt.set_halt(Some(Box::new(move || {
-            let target = &target;
-            // SAFETY: see HaltTarget.
-            unsafe { sys::dyn_halt(target.0) }
-        })));
+        set_halt_target(&interrupt, raw);
         let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events, interrupt, code_cache, precise_faults };
         if arch == Arch::Arm32 {
             // SAFETY: valid handle; user mode, ARM state.
@@ -129,6 +140,23 @@ impl Dynarmic {
         cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
         Ok(cpu)
+    }
+
+    /// Replaces the JIT with one that has `precise_faults` set as given, keeping memory and
+    /// registers. Translated code is discarded.
+    pub fn set_precise_faults(&mut self, precise_faults: bool) -> Result<(), Error> {
+        if precise_faults == self.precise_faults {
+            return Ok(());
+        }
+        let context = crate::save_context(self);
+        let raw = new_jit(self.arch, &mut self.memory, &mut self.events, self.code_cache, precise_faults)?;
+        // The old JIT is freed only after nothing can halt it any more.
+        self.interrupt.set_halt(None);
+        self.cpu = Handle(raw);
+        set_halt_target(&self.interrupt, raw);
+        self.precise_faults = precise_faults;
+        crate::load_context(self, &context);
+        Ok(())
     }
 
     fn cpsr(&self) -> u64 {
@@ -272,6 +300,10 @@ impl Cpu for Dynarmic {
         let mut copy = Dynarmic::with_options(self.arch, self.code_cache, self.precise_faults)?;
         crate::copy_state(self, &mut copy)?;
         Ok(Box::new(copy))
+    }
+
+    fn require_precise_faults(&mut self) -> Result<(), Error> {
+        self.set_precise_faults(true)
     }
 
     fn clear_exclusive(&mut self) {
