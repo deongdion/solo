@@ -30,6 +30,7 @@ pub use ::device::{Clock, ClockMode, Profile};
 pub use gdb::GdbStub;
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
+pub use inspect::tracediff::{first_divergence, Divergence, Step};
 pub use tracing::MemoryAccess;
 pub use unpack::{UnpackConfig, Unpacked};
 pub use host::HostFunction;
@@ -452,6 +453,29 @@ impl Emulator {
             }
         }
         out
+    }
+
+    /// The instructions recorded by the trace so far, each as a module and an offset into it
+    /// (PLAN.md F17). A pc that falls outside every loaded module is skipped, so the result lines
+    /// up with a trace recorded on a device where the libraries loaded at different addresses;
+    /// `diff_trace` compares the two and reports where execution first departed.
+    pub fn executed_trace(&self) -> Vec<Step> {
+        let Some(trace) = &self.trace else { return Vec::new() };
+        trace
+            .ring
+            .iter()
+            .filter_map(|e| {
+                let m = self.linker.module_at(e.pc)?;
+                Some(Step::new(m.name.clone(), e.pc.wrapping_sub(m.bias)))
+            })
+            .collect()
+    }
+
+    /// Compares a trace recorded on a real device against what this emulator just executed and
+    /// reports the first step where they diverge (None if the emulator followed the device for as
+    /// far as the shorter run). Feed `reference` from `inspect::tracediff::parse` of a device log.
+    pub fn diff_trace(&self, reference: &[Step]) -> Option<Divergence> {
+        first_divergence(reference, &self.executed_trace())
     }
 
     /// Loads a library, runs its init functions, then calls `JNI_OnLoad` if it exports one.

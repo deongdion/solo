@@ -3,3 +3,4 @@
 pub mod scan;
 pub mod disasm;
 pub mod trace;
+pub mod tracediff;
