@@ -1,0 +1,45 @@
+# 2026-11-27T15:53:27 AMD Ryzen 5 5600G with Radeon Graphics
+rust dynarmic arm64 run1 | init_us=25988.5 first_call_us=157618.0 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=358.900 p99_us=1380.000 n=500 | copy_204800 p50_us=795.600 p99_us=2669.200 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=377.000 p99_us=1566.400 n=500
+unidbg dynarmic arm64 run1 | init_us=242785.3 | checksum=3090121304 copy=4375 | empty p50_us=6.600 p99_us=34.800 n=100000 | checksum_102400 p50_us=400.200 p99_us=681.700 n=500 | copy_204800 p50_us=849.700 p99_us=1552.300 n=500
+rust dynarmic arm64 run2 | init_us=24448.3 first_call_us=159768.0 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=371.900 p99_us=927.900 n=500 | copy_204800 p50_us=802.500 p99_us=2383.100 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=382.300 p99_us=883.200 n=500
+unidbg dynarmic arm64 run2 | init_us=251944.1 | checksum=3090121304 copy=4375 | empty p50_us=6.600 p99_us=29.000 n=100000 | checksum_102400 p50_us=407.100 p99_us=795.300 n=500 | copy_204800 p50_us=824.900 p99_us=1535.500 n=500
+rust dynarmic arm64 run3 | init_us=15895.6 first_call_us=138319.3 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=378.700 p99_us=1666.200 n=500 | copy_204800 p50_us=795.600 p99_us=3236.300 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=381.000 p99_us=1186.900 n=500
+unidbg dynarmic arm64 run3 | init_us=249140.9 | checksum=3090121304 copy=4375 | empty p50_us=6.200 p99_us=30.200 n=100000 | checksum_102400 p50_us=408.800 p99_us=619.100 n=500 | copy_204800 p50_us=826.800 p99_us=1828.700 n=500
+rust dynarmic arm64 throughput | instances=1 setup_ms=203.2 empty_calls_per_s=8744304
+rust dynarmic arm64 throughput | instances=4 setup_ms=202.1 empty_calls_per_s=30804280
+rust dynarmic arm64 throughput | instances=8 setup_ms=259.8 empty_calls_per_s=48954236
+rust dynarmic arm64 memory | instances=1 create_and_warm_ms=189.8 peak_ws_mb=25.9
+rust dynarmic arm64 memory | instances=8 create_and_warm_ms=393.2 peak_ws_mb=161.9
+rust unicorn arm64 run1 | init_us=1700.2 first_call_us=221.7 | correct checksum=true copy=true | empty p50_us=0.400 p99_us=0.700 n=100000 | checksum_102400 p50_us=819.800 p99_us=4490.300 n=500 | copy_204800 p50_us=16835.300 p99_us=36303.700 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=828.700 p99_us=2351.000 n=500
+unidbg unicorn2 arm64 run1 | init_us=215770.6 | checksum=3090121304 copy=4375 | empty p50_us=4.800 p99_us=21.100 n=100000 | checksum_102400 p50_us=812.500 p99_us=1549.400 n=500 | copy_204800 p50_us=6495.800 p99_us=15814.700 n=500
+rust unicorn arm64 run2 | init_us=1074.5 first_call_us=87.4 | correct checksum=true copy=true | empty p50_us=0.300 p99_us=0.500 n=100000 | checksum_102400 p50_us=818.800 p99_us=6084.800 n=500 | copy_204800 p50_us=18059.600 p99_us=84566.500 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=835.900 p99_us=4783.400 n=500
+unidbg unicorn2 arm64 run2 | init_us=229185.3 | checksum=3090121304 copy=4375 | empty p50_us=4.500 p99_us=25.200 n=100000 | checksum_102400 p50_us=831.400 p99_us=2719.500 n=500 | copy_204800 p50_us=6386.400 p99_us=15195.500 n=500
+rust unicorn arm64 run3 | init_us=1282.9 first_call_us=105.8 | correct checksum=true copy=true | empty p50_us=0.300 p99_us=0.500 n=100000 | checksum_102400 p50_us=822.400 p99_us=9555.300 n=500 | copy_204800 p50_us=17196.500 p99_us=39274.000 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=818.800 p99_us=5117.900 n=500
+unidbg unicorn2 arm64 run3 | init_us=223887.9 | checksum=3090121304 copy=4375 | empty p50_us=4.500 p99_us=24.400 n=100000 | checksum_102400 p50_us=838.100 p99_us=3266.600 n=500 | copy_204800 p50_us=6355.500 p99_us=12741.800 n=500
+rust unicorn arm64 throughput | instances=1 setup_ms=208.4 empty_calls_per_s=2066166
+rust unicorn arm64 throughput | instances=4 setup_ms=211.9 empty_calls_per_s=7660506
+rust unicorn arm64 throughput | instances=8 setup_ms=224.0 empty_calls_per_s=13840159
+rust unicorn arm64 memory | instances=1 create_and_warm_ms=4.5 peak_ws_mb=6.3
+rust unicorn arm64 memory | instances=8 create_and_warm_ms=11.9 peak_ws_mb=15.4
+rust dynarmic arm32 run1 | init_us=14914.1 first_call_us=75544.5 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=305.800 p99_us=2951.300 n=500 | copy_204800 p50_us=688.300 p99_us=1538.600 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=281.500 p99_us=867.300 n=500
+unidbg dynarmic arm32 run1 | init_us=243941.3 | checksum=3090121304 copy=4375 | empty p50_us=6.700 p99_us=29.500 n=100000 | checksum_102400 p50_us=324.400 p99_us=773.700 n=500 | copy_204800 p50_us=705.000 p99_us=2832.800 n=500
+rust dynarmic arm32 run2 | init_us=8788.7 first_call_us=48667.6 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=307.300 p99_us=981.500 n=500 | copy_204800 p50_us=720.900 p99_us=3252.400 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=294.200 p99_us=2804.700 n=500
+unidbg dynarmic arm32 run2 | init_us=236415.3 | checksum=3090121304 copy=4375 | empty p50_us=6.500 p99_us=35.500 n=100000 | checksum_102400 p50_us=308.200 p99_us=1382.200 n=500 | copy_204800 p50_us=708.300 p99_us=2945.400 n=500
+rust dynarmic arm32 run3 | init_us=15938.6 first_call_us=69665.1 | correct checksum=true copy=true | empty p50_us=0.100 p99_us=0.200 n=100000 | checksum_102400 p50_us=272.800 p99_us=1274.200 n=500 | copy_204800 p50_us=702.200 p99_us=6092.500 n=500 | budget_stop=Budget | checksum_102400_budgeted p50_us=276.000 p99_us=2257.700 n=500
+unidbg dynarmic arm32 run3 | init_us=243464.0 | checksum=3090121304 copy=4375 | empty p50_us=6.700 p99_us=30.300 n=100000 | checksum_102400 p50_us=304.800 p99_us=1505.900 n=500 | copy_204800 p50_us=694.600 p99_us=2626.200 n=500
+rust dynarmic arm32 throughput | instances=1 setup_ms=201.1 empty_calls_per_s=6631519
+rust dynarmic arm32 throughput | instances=4 setup_ms=200.7 empty_calls_per_s=23016819
+rust dynarmic arm32 throughput | instances=8 setup_ms=203.5 empty_calls_per_s=40292387
+rust dynarmic arm32 memory | instances=1 create_and_warm_ms=98.5 peak_ws_mb=10.6
+rust dynarmic arm32 memory | instances=8 create_and_warm_ms=289.1 peak_ws_mb=39.5
+rust unicorn arm32 run1 | init_us=5067.6 first_call_us=218.3 | correct checksum=true copy=true | empty p50_us=0.500 p99_us=0.800 n=100000 | checksum_102400 p50_us=744.300 p99_us=5048.100 n=500 | copy_204800 p50_us=16899.100 p99_us=37131.500 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=707.900 p99_us=4670.700 n=500
+unidbg unicorn2 arm32 run1 | init_us=219851.2 | checksum=3090121304 copy=4375 | empty p50_us=5.300 p99_us=26.200 n=100000 | checksum_102400 p50_us=686.000 p99_us=2786.400 n=500 | copy_204800 p50_us=7406.800 p99_us=15317.900 n=500
+rust unicorn arm32 run2 | init_us=4554.7 first_call_us=134.0 | correct checksum=true copy=true | empty p50_us=0.600 p99_us=0.800 n=100000 | checksum_102400 p50_us=714.100 p99_us=5421.900 n=500 | copy_204800 p50_us=19569.700 p99_us=65136.800 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=734.200 p99_us=8603.500 n=500
+unidbg unicorn2 arm32 run2 | init_us=220327.0 | checksum=3090121304 copy=4375 | empty p50_us=4.700 p99_us=59.300 n=100000 | checksum_102400 p50_us=726.400 p99_us=2959.900 n=500 | copy_204800 p50_us=8268.900 p99_us=20628.200 n=500
+rust unicorn arm32 run3 | init_us=4089.5 first_call_us=119.5 | correct checksum=true copy=true | empty p50_us=0.600 p99_us=0.900 n=100000 | checksum_102400 p50_us=704.800 p99_us=2402.900 n=500 | copy_204800 p50_us=16107.400 p99_us=32482.600 n=500 | budget_stop=Returned | checksum_102400_budgeted p50_us=714.400 p99_us=1027.000 n=500
+unidbg unicorn2 arm32 run3 | init_us=186629.1 | checksum=3090121304 copy=4375 | empty p50_us=4.700 p99_us=21.500 n=100000 | checksum_102400 p50_us=694.600 p99_us=902.900 n=500 | copy_204800 p50_us=7505.500 p99_us=11121.800 n=500
+rust unicorn arm32 throughput | instances=1 setup_ms=200.1 empty_calls_per_s=1832224
+rust unicorn arm32 throughput | instances=4 setup_ms=245.2 empty_calls_per_s=5773747
+rust unicorn arm32 throughput | instances=8 setup_ms=217.9 empty_calls_per_s=10537174
+rust unicorn arm32 memory | instances=1 create_and_warm_ms=5.5 peak_ws_mb=7.4
+rust unicorn arm32 memory | instances=8 create_and_warm_ms=64.5 peak_ws_mb=23

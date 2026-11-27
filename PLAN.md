@@ -68,7 +68,8 @@ Porting unidbg code (Apache-2.0) requires keeping its NOTICE and marking changed
 | F7 | Unresolved symbols and unhandled syscalls/JNI calls are scattered through the log | Summary at the end of a run: unresolved symbols, unhandled syscalls, unhandled JNI signatures, with counts and first caller | inspect | M1 (syscalls, symbols), M2 (JNI) |
 | F8 | Multi-stage loaders (one module loading another via dlopen) are hard to follow | Module timeline: load, init_array, JNI_OnLoad, RegisterNatives, dlsym, with the requesting module and caller address | linker, javavm, inspect | M2 |
 | F9 | On Windows, java.exe broke CJK paths (JVM argument encoding, not unidbg) | Host paths stay `OsStr`/`Path` end to end; CI test from a Korean path on Windows | all | M1 |
-| F11 | Native code reads input `HashMap`s through `keySet()`, `iterator()`, `next()`, `get()`, `size()`, `containsKey()`; users re-implement the Map/Set/Iterator/Map.Entry protocol by hand. In unidbg's proxy layer the method is looked up on the object's runtime class; for `HashMap$KeySet` and similar private classes the reflective call throws `IllegalAccessException` (measured on JDK 21 outside unidbg; that this is the unidbg failure path is a hypothesis) | Built-in marshaling for `Map`, `HashMap`, `Set`, `List`, `Iterator`, `Map$Entry`, boxed primitives: resolve methods by the interface named in `GetMethodID`, not by the runtime class | java, javavm | M2 |
+| F11 | Native code reads input `HashMap`s through `keySet()`, `iterator()`, `next()`, `get()`, `size()`, `containsKey()`, `toArray()`; users re-implement the Map/Set/Iterator/Map.Entry protocol by hand. In unidbg's proxy layer the method is looked up on the object's runtime class; for `HashMap$KeySet` and similar private classes the reflective call throws `IllegalAccessException` (measured on JDK 21 outside unidbg; that this is the unidbg failure path is a hypothesis) | Built-in marshaling for `Map`, `HashMap`, `Set`, `List`, `Iterator`, `Map$Entry`, boxed primitives: resolve methods by the interface named in `GetMethodID`, not by the runtime class | java, javavm | M2 |
+| F12 | `fstatat(fd, NULL, buf, AT_EMPTY_PATH)` (stat the fd itself) crashes unidbg: both handlers call `pathname.getString(0)` before any check (NPE on null), and a dirfd other than `AT_FDCWD` with an empty or relative path throws `BackendException` (checked in `ARM64SyscallHandler.fstatat64` and `ARM32SyscallHandler.fstatat64` at upstream 30911d7) | All `*at` syscalls share one path resolver: null or empty path with `AT_EMPTY_PATH` resolves to the fd itself; relative paths resolve against the dirfd; errors become errno, never a host exception. Covered by fixtures | kernel | M1 |
 | F10 | Signing orchestration (which cmd/args reach `doCommandNative`) lives in a plugin dex that is only decrypted in memory at run time; unidbg cannot run it, so the commands must be guessed or the dex read by hand | Load a dex from memory (like `InMemoryDexClassLoader`) and run its bytecode in the VM, calling into native through the same JNI layer. **Exception to the scope rule: unidbg has no dex loading or bytecode execution (checked in its source).** Needs a Dalvik interpreter on top of the redex `engine` dex parser | javavm, java, redex engine | M6 (after merge) |
 
 Not planned (not in unidbg): HTTP or gRPC server, Python bindings, standalone CLI, auto-generated JNI stubs from dex, real-device diff tool, crypto constant detection, coverage export, icicle backend. Run commands go into the redex `cli` after the merge.
@@ -80,8 +81,9 @@ Dependencies point downward: machine <- backend <- linker <- kernel <- javavm <-
 | Crate | Role | At merge |
 |---|---|---|
 | machine | Guest memory, registers, errors | as is |
-| backend | dynarmic, unicorn, HVF, KVM | as is |
-| dynarmicsys, unicornsys | FFI | as is |
+| backend | dynarmic, unicorn (crates.io `unicorn-engine`, optional), HVF, KVM | as is |
+| tools/backendbench | Same guest kernels on every backend and through unidbg | as is |
+| dynarmicsys | FFI to the pinned dynarmic fork (submodule) through a C shim | as is |
 | linker | ELF loader, unpacker | as is |
 | kernel | Syscalls, VFS, signals, threads | as is |
 | javavm | JNI, reference tables, exceptions | as is |
@@ -97,13 +99,17 @@ No `cli` or `dex` crate: both already exist in redex.
 | Step | Content | Done when (measured) |
 |---|---|---|
 | M0 | unidbg baseline | p50/p99 call latency over 10k warm calls, RSS per instance, time to end of JNI_OnLoad, throughput at K instances; fixed hardware |
-| M0.5 | dynarmic vs unicorn | Default backend confirmed on the corpus |
+| M0.5 | dynarmic vs unicorn | Done: dynarmic confirmed (tools/backendbench/README.md) |
 | M1 | ELF, libc, syscalls, VFS, arm64 and armv7, crash report, memory magic scan and dump (F6) | Output byte-equal to unidbg |
 | M2 | JNI, java stubs, reflection, exceptions | RegisterNatives and static-registered modules pass |
 | M3 | Threads, signals, save/restore, worker pool | Beats M0; 24h RSS soak |
 | M4 | Trace, hooks, debugger, unpacker, device profile | Feature fixtures pass |
 | M5 | Merge into redex | |
 | M6 | Dex bytecode execution (F10) | Plugin dex loaded from memory drives the native calls with no hand-written orchestration |
+
+## Build
+
+The dynarmic backend needs Boost headers: set `DYNARMIC_BOOST_INCLUDE` to a Boost source tree (the directory that contains `boost/`). The dynarmic fork is a git submodule (`git submodule update --init --recursive`).
 
 ## Corpus
 

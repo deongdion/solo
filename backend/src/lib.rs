@@ -1,1 +1,113 @@
 //! CPU backend trait and implementations: dynarmic (default), unicorn (parity), HVF and KVM (later).
+//!
+//! Guest memory belongs to `machine::Memory`; a backend only executes on top of it. Every call into
+//! guest code returns through a trampoline page that holds a supervisor call with `RETURN_SVC`, so all
+//! backends stop the same way.
+
+use machine::{Memory, Perms};
+
+#[cfg(feature = "dynarmic")]
+mod dynarmic;
+#[cfg(feature = "unicorn")]
+mod unicorn;
+
+#[cfg(feature = "dynarmic")]
+pub use dynarmic::Dynarmic;
+#[cfg(feature = "unicorn")]
+pub use unicorn::Unicorn;
+
+/// Immediate of the supervisor call that marks a return to the host.
+pub const RETURN_SVC: u32 = 0xff;
+
+/// Instruction set of the guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    Arm64,
+    Arm32,
+}
+
+impl Arch {
+    pub fn address_bits(self) -> u32 {
+        match self {
+            Arch::Arm64 => 36,
+            Arch::Arm32 => 32,
+        }
+    }
+}
+
+/// Architecture-neutral register names used by the call path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reg {
+    /// Argument and general register `n` (x0..x30 on A64, r0..r12 on A32).
+    General(u8),
+    Sp,
+    Lr,
+    Pc,
+    /// Thread pointer (TPIDR_EL0 on A64, TPIDRURO on A32).
+    Tls,
+}
+
+/// Why a run returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// The guest executed the return trampoline.
+    Returned,
+    /// A supervisor call other than the return trampoline.
+    Svc(u32),
+    /// The instruction budget ran out.
+    Budget,
+    /// Another thread requested a halt.
+    Halted,
+    /// Unmapped access.
+    Fault { address: u64, write: bool },
+    /// Undefined instruction, breakpoint or similar.
+    Exception { pc: u64, kind: u32 },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Memory(#[from] machine::Error),
+    #[error("backend failure: {0}")]
+    Backend(String),
+}
+
+/// Executes guest code on a `Memory`.
+pub trait Cpu {
+    fn arch(&self) -> Arch;
+    fn reg(&self, reg: Reg) -> u64;
+    fn set_reg(&mut self, reg: Reg, value: u64);
+    fn memory(&mut self) -> &mut Memory;
+    /// Maps a range in memory and makes it visible to the backend.
+    fn map(&mut self, address: u64, length: u64, perms: Perms) -> Result<(), Error>;
+    /// Runs from `pc` until a stop condition or until `budget` instructions have executed.
+    fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error>;
+    /// Discards translated code for a range after the guest code there was rewritten.
+    fn invalidate(&mut self, address: u64, length: u64);
+
+    /// Calls a guest function with integer arguments and returns the first result register.
+    fn call(&mut self, function: u64, args: &[u64], budget: u64) -> Result<(Stop, u64), Error> {
+        let stack = self.reg(Reg::Sp);
+        for (i, value) in args.iter().enumerate() {
+            self.set_reg(Reg::General(i as u8), *value);
+        }
+        self.set_reg(Reg::Lr, TRAMPOLINE);
+        let stop = self.run(function, budget)?;
+        let result = self.reg(Reg::General(0));
+        self.set_reg(Reg::Sp, stack);
+        Ok((stop, result))
+    }
+}
+
+/// Guest address of the return trampoline page.
+pub const TRAMPOLINE: u64 = 0xffff_0000;
+
+/// Machine code for the return trampoline.
+pub fn trampoline_code(arch: Arch) -> Vec<u8> {
+    match arch {
+        // svc #RETURN_SVC
+        Arch::Arm64 => (0xd400_0001u32 | (RETURN_SVC << 5)).to_le_bytes().to_vec(),
+        // svc #RETURN_SVC (A32 encoding); callers return here in ARM state.
+        Arch::Arm32 => (0xef00_0000u32 | RETURN_SVC).to_le_bytes().to_vec(),
+    }
+}

@@ -8,10 +8,10 @@ publish.workspace = true
 thiserror.workspace = true
 machine.workspace = true
 dynarmicsys = { workspace = true, optional = true }
-unicornsys = { workspace = true, optional = true }
+unicorn-engine = { version = "2.1", optional = true, default-features = false, features = ["arch_arm", "arch_aarch64"] }
 
 [features]
 default = ["dynarmic"]
 dynarmic = ["dep:dynarmicsys"]
 # GPL-2.0: local parity runs only, never enabled in a distributed build.
-unicorn = ["dep:unicornsys"]
+unicorn = ["dep:unicorn-engine"]

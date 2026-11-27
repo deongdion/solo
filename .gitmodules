@@ -1,0 +1,3 @@
+[submodule "dynarmicsys/dynarmic"]
+	path = dynarmicsys/dynarmic
+	url = https://github.com/zhkl0228/yuzu-dynarmic

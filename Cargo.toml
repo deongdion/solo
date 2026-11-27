@@ -4,7 +4,6 @@ members = [
     "machine",
     "backend",
     "dynarmicsys",
-    "unicornsys",
     "linker",
     "kernel",
     "javavm",
@@ -12,6 +11,7 @@ members = [
     "device",
     "inspect",
     "runtime",
+    "tools/backendbench",
 ]
 
 [workspace.package]
@@ -24,7 +24,6 @@ thiserror = "2"
 machine = { path = "machine" }
 backend = { path = "backend" }
 dynarmicsys = { path = "dynarmicsys" }
-unicornsys = { path = "unicornsys" }
 linker = { path = "linker" }
 kernel = { path = "kernel" }
 javavm = { path = "javavm" }
