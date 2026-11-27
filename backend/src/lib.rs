@@ -219,6 +219,12 @@ pub trait Cpu: Send {
     /// (creating a dynarmic JIT costs tens of milliseconds). Translated code is discarded.
     fn restore(&mut self, from: &dyn Cpu) -> Result<(), Error>;
 
+    /// Executes exactly one instruction at the current PC: `Stop::Budget` after it, or what
+    /// stopped it (a syscall, a fault).
+    fn step(&mut self) -> Result<Stop, Error> {
+        self.resume(1)
+    }
+
     /// Runs from `pc`.
     fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error> {
         self.set_pc(pc);

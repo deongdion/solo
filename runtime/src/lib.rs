@@ -7,6 +7,7 @@
 //!
 //! A call into the guest returns through the trampoline page (`backend::TRAMPOLINE`).
 
+pub mod hooks;
 mod host;
 mod jni;
 pub mod pool;
@@ -19,6 +20,7 @@ use kernel::{Config as KernelConfig, Kernel, Outcome, signals};
 use linker::{Linker, Resolver};
 use machine::Perms;
 
+pub use hooks::{Call, Flow, Hook, HookId};
 pub use host::HostFunction;
 pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
 pub use jni::OnLoadEvent;
@@ -45,6 +47,9 @@ pub mod layout {
     /// Strings and structures the host hands to the guest.
     pub const HOST_DATA: u64 = 0xfff0_0000;
     pub const HOST_DATA_SIZE: u64 = 0xe_0000;
+    /// Import hook stubs and the hook return stub, mapped on first use.
+    pub const HOOK_STUBS: u64 = 0xffef_0000;
+    pub const HOOK_STUBS_SIZE: u64 = 0x1_0000;
 }
 
 /// First supervisor call immediate used for host functions.
@@ -63,6 +68,8 @@ pub enum Error {
     Linker(#[from] linker::Error),
     #[error(transparent)]
     Kernel(#[from] kernel::Error),
+    #[error("hook: {0}")]
+    Hook(String),
     #[error("{0}")]
     Crash(Box<Crash>),
     #[error("guest exited with status {0}")]
@@ -173,6 +180,7 @@ pub struct Emulator {
     pub(crate) onload_events: Vec<jni::OnLoadEvent>,
     budget: u64,
     depth: u32,
+    pub(crate) hooks: hooks::Hooks,
 }
 
 impl Emulator {
@@ -202,6 +210,7 @@ impl Emulator {
             onload_events: Vec::new(),
             budget: options.budget,
             depth: 0,
+            hooks: hooks::Hooks::default(),
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -235,6 +244,7 @@ impl Emulator {
             onload_events: self.onload_events.clone(),
             budget: self.budget,
             depth: 0,
+            hooks: self.hooks.clone(),
         })
     }
 
@@ -256,6 +266,7 @@ impl Emulator {
         self.collect_at = template.collect_at;
         self.onload_events = template.onload_events.clone();
         self.budget = template.budget;
+        self.hooks = template.hooks.clone();
         Ok(())
     }
 
@@ -419,6 +430,8 @@ impl Emulator {
         // One budget per call, spread over the resumes between syscalls and host calls.
         let mut remaining = self.budget;
         let interrupt = self.cpu.interrupt();
+        // A stop that came out of a hook's single step, handled before resuming.
+        let mut next: Option<Stop> = None;
         loop {
             if interrupt.take() {
                 return Err(Error::Interrupted);
@@ -429,11 +442,17 @@ impl Emulator {
             // With several guest threads, run in slices and rotate between them.
             let threaded = self.kernel.threads.count() > 1;
             let slice = if threaded { remaining.min(THREAD_SLICE) } else { remaining };
-            let stop = self.cpu.resume(slice)?;
-            remaining = remaining.saturating_sub(self.cpu.executed());
-            if remaining == 0 && stop != Stop::Returned {
-                return Err(Error::Budget);
-            }
+            let stop = match next.take() {
+                Some(stop) => stop,
+                None => {
+                    let stop = self.cpu.resume(slice)?;
+                    remaining = remaining.saturating_sub(self.cpu.executed());
+                    if remaining == 0 && stop != Stop::Returned {
+                        return Err(Error::Budget);
+                    }
+                    stop
+                }
+            };
             match stop {
                 Stop::Returned if self.kernel.threads.owner().is_none_or(|o| o == self.kernel.threads.current) => return Ok(()),
                 // Another thread finished an outer call: it waits at its trampoline until this
@@ -448,6 +467,16 @@ impl Emulator {
                     Outcome::Exit(code) => return Err(Error::Exited(code)),
                     Outcome::Deadlock => return Err(Error::Deadlock),
                     Outcome::Killed(signo) => return Err(Error::Killed(signo)),
+                },
+                Stop::Svc(hooks::HOOK_SVC) => match self.hook_hit(self.cpu.pc())? {
+                    Some(stop) => next = stop,
+                    // Linux ignores the immediate: any other `svc #0xfe` is a syscall.
+                    None => match self.kernel.syscall(self.cpu.as_mut())? {
+                        Outcome::Continue => {}
+                        Outcome::Exit(code) => return Err(Error::Exited(code)),
+                        Outcome::Deadlock => return Err(Error::Deadlock),
+                        Outcome::Killed(signo) => return Err(Error::Killed(signo)),
+                    },
                 },
                 Stop::Svc(imm) if imm >= HOST_BASE => {
                     let index = (imm - HOST_BASE) as usize;

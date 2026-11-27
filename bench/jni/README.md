@@ -89,5 +89,14 @@ installs a SIGSEGV handler that `siglongjmp`s out and probes a stack byte, addre
 | unidbg armv7 | no result within 120 s (the SIGSEGV repeats) |
 | Rust runtime (both architectures, dynarmic and unicorn) | `usr1 2 signo 10; probe 1 0 0; blocked 0 pending 1 delivered 1` (`expected_signals.txt`) |
 
+## Hooks (PLAN.md M4)
+
+`Java_fix_Native_hooked(a, b)` returns `fix_add(a, b) * 100000 + fix_global() * 10 +
+strlen("hello")`; `fix_global` starts with `adrp` on arm64, `Java_fix_Native_step` calls
+`fix_step`, whose first instruction is a branch to `fix_add` on both architectures.
+`runtime/tests/hooks.rs` checks the runtime's hooks on them; `HookRun.java <arm64|arm32>
+<libjnifix.so> <none|hookzz|hookzzpost|xhook>` times unidbg's HookZz on `fix_add` and xHook on
+`strlen` (numbers in PLAN.md M4).
+
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).

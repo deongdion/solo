@@ -40,6 +40,7 @@ unsafe extern "C" {
     pub fn dyn_free(cpu: *mut DynCpu);
     pub fn dyn_run(cpu: *mut DynCpu, budget: u64, executed: *mut u64) -> u32;
     pub fn dyn_halt(cpu: *mut DynCpu);
+    pub fn dyn_step(cpu: *mut DynCpu) -> u32;
     pub fn dyn_reg(cpu: *const DynCpu, index: u32) -> u64;
     pub fn dyn_set_reg(cpu: *mut DynCpu, index: u32, value: u64);
     pub fn dyn_invalidate(cpu: *mut DynCpu, address: u64, length: u64);

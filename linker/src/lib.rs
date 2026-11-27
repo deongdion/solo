@@ -55,6 +55,9 @@ pub struct Module {
     pub symbols: SymbolTable,
     /// `.symtab` functions and objects (link-time address, name), shared between forks.
     pub static_symbols: std::sync::Arc<[(u64, String)]>,
+    /// Places the loader wrote a symbol's address to (GOT entries and absolute pointers), with
+    /// the symbol's name: where an import hook redirects calls.
+    pub imports: Vec<(u64, String)>,
     pub needed: Vec<String>,
     /// DT_INIT first, then DT_INIT_ARRAY entries, as absolute addresses.
     pub init: Vec<u64>,
@@ -289,6 +292,7 @@ impl Linker {
             bias,
             symbols: SymbolTable { is64: elf.is64, ..Default::default() },
             static_symbols: static_symbols(data, elf.is64).into(),
+            imports: Vec::new(),
             needed: Vec::new(),
             init: Vec::new(),
             symbolic: false,

@@ -367,3 +367,34 @@ JNIEXPORT jstring JNICALL Java_fix_Native_signals(JNIEnv* env, jclass self) {
     say(" blocked %d pending %d delivered %d\n", while_blocked, is_pending, usr2_count);
     return (*env)->NewStringUTF(env, out);
 }
+
+// Hooks (runtime/tests/hooks.rs): fix_add and fix_global are exported and not inlined; fix_global
+// starts with a PC-relative instruction on arm64 (adrp); strlen is an import through the PLT.
+static volatile int fix_global_value = 1234;
+static const char* volatile hello_text = "hello";
+
+__attribute__((noinline, visibility("default"))) int fix_add(int a, int b) {
+    return a + b;
+}
+
+__attribute__((noinline, visibility("default"))) int fix_global(void) {
+    return fix_global_value;
+}
+
+JNIEXPORT jint JNICALL Java_fix_Native_hooked(JNIEnv* env, jclass self, jint a, jint b) {
+    return fix_add(a, b) * 100000 + fix_global() * 10 + (int)strlen(hello_text);
+}
+
+// fix_step(a, b) tail-calls fix_add(a, b) with a branch as its first instruction on both
+// architectures: a hook on it runs the original by single step.
+__attribute__((naked, visibility("default"))) int fix_step(int a, int b) {
+#if defined(__aarch64__)
+    __asm__("b fix_add");
+#else
+    __asm__("b.w fix_add");
+#endif
+}
+
+JNIEXPORT jint JNICALL Java_fix_Native_step(JNIEnv* env, jclass self, jint a, jint b) {
+    return fix_step(a, b);
+}

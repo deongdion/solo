@@ -326,6 +326,26 @@ uint32_t dyn_run(DynCpu* cpu, uint64_t budget, uint64_t* executed) {
     }
 }
 
+uint32_t dyn_step(DynCpu* cpu) {
+    try {
+        Dynarmic::HaltReason reason;
+        if (cpu->is64) {
+            cpu->cb64->budget = 1;
+            cpu->cb64->executed = 0;
+            reason = cpu->jit64->Step();
+            cpu->jit64->ClearHalt(static_cast<Dynarmic::HaltReason>(0xffffffffu));
+        } else {
+            cpu->cb32->budget = 1;
+            cpu->cb32->executed = 0;
+            reason = cpu->jit32->Step();
+            cpu->jit32->ClearHalt(static_cast<Dynarmic::HaltReason>(0xffffffffu));
+        }
+        return static_cast<uint32_t>(reason) & ~static_cast<uint32_t>(Dynarmic::HaltReason::Step);
+    } catch (...) {
+        return DYN_HALT_ERROR;
+    }
+}
+
 void dyn_halt(DynCpu* cpu) {
     auto reason = static_cast<Dynarmic::HaltReason>(DYN_HALT_EXTERNAL);
     if (cpu->is64) cpu->jit64->HaltExecution(reason);

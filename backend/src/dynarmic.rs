@@ -288,6 +288,17 @@ impl Cpu for Dynarmic {
         self.executed
     }
 
+    fn step(&mut self) -> Result<Stop, Error> {
+        self.events.stop = None;
+        // SAFETY: valid handle; hooks point at self.events which is boxed and alive.
+        let reason = unsafe { sys::dyn_step(self.cpu.0) };
+        self.executed = 1;
+        if reason & sys::DYN_HALT_ERROR != 0 {
+            return Err(Error::Backend("dynarmic threw during execution".into()));
+        }
+        Ok(self.events.stop.take().unwrap_or(Stop::Budget))
+    }
+
     fn interrupt(&self) -> crate::Interrupt {
         self.interrupt.clone()
     }

@@ -196,7 +196,14 @@ Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-
 - `runtime/tests/tmessages.rs` now asserts that JNI_OnLoad of libtmessages returns 0x10006 with nothing unhandled on the built-in models alone, on both backends (was a manual probe).
 - Soak: `tmbench <arch> dynarmic soak <workers> <seconds>` (two never-recycled pool workers, one instance restored from the template every 1000 calls, every result checked, one line a minute). The 24 h arm64 run started 2026-11-27 19:53 +09:00; results go here when it ends.
 
-Next: 24 h RSS soak result; then M4.
+Next: 24 h RSS soak result.
+
+### M4 progress
+
+- Hooks (`runtime::hooks`), one API in place of unidbg's xHook, HookZz, Dobby and Whale: `Emulator::hook(address, Hook)`, `hook_symbol`, `hook_import(module, symbol, Hook)` (the module's GOT entries and absolute pointers for the symbol; other callers and `dlsym` untouched), `unhook`. A `Hook` has an enter callback returning `Flow::Continue` or `Flow::Return(value)` and a leave callback that sees and may change the return value; callbacks get `&mut Emulator` and may call guest code. Hooks are copied by `fork` and `restore`. The hooked instruction becomes `svc #0xfe`; to run the original, its first instruction runs from a trampoline when it does not depend on its address (A64: anything but branches and literal loads; adr/adrp rewritten as a load of their value; arm32: push/stmdb sp!, sub sp, mov ip, sp, in ARM and Thumb), otherwise it is put back and single-stepped (`Cpu::step`: dynarmic `Jit::Step`, unicorn count 1). Leave callbacks return through a stub, per thread, dropping calls skipped by longjmp. Tests: `runtime/tests/hooks.rs`, both architectures, both backends (observe, replace, leave, import, unhook, fork and restore, a callback calling guest code, an adrp first instruction, a branch first instruction).
+- Hook cost, `bench/jni` Native.hooked, 20,000 warm calls, same session. Runtime (`hook_cost`, release, dynarmic), arm64 / arm32: no hook 2.64 / 2.75 µs; inline observe through the trampoline 2.90 / 2.98; replace 3.01 / 2.82; leave 2.81 / 3.28; adrp first instruction 3.10 (arm64); import observe 3.03 / 3.07; first instruction a branch (single step) 20.10 / 22.70 vs 2.77 / 2.16 unhooked. unidbg (`bench/jni/HookRun.java`, dynarmic), arm64 / arm32: no hook 20.45 / 19.56 µs; HookZz replace calling the original: no result within 300 s on arm64 (both with and without postCall), 23.47 µs arm32 (24.23 with postCall); xHook on strlen 24.50 / 25.08 µs.
+
+Next: code and memory trace, debugger, unpacker, device profile.
 
 ## Build
 

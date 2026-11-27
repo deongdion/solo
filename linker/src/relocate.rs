@@ -77,6 +77,7 @@ impl Linker {
         }
 
         let mut resolved: HashMap<u32, u64> = HashMap::new();
+        let mut imports: Vec<(u64, String)> = Vec::new();
         for r in relocations {
             let place = bias.wrapping_add(r.offset);
             let symbol_value = if r.symbol == 0 {
@@ -117,12 +118,19 @@ impl Linker {
                     }
                 }
             };
+            if r.symbol != 0 && matches!(r.kind, R_AARCH64_ABS64 | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT | R_ARM_ABS32 | R_ARM_GLOB_DAT | R_ARM_JUMP_SLOT) {
+                let symbols = &self.modules[index].symbols;
+                if let Some(s) = symbols.symbol(r.symbol as usize) {
+                    imports.push((place, String::from_utf8_lossy(symbols.name(s.name)).into_owned()));
+                }
+            }
             if is64 {
                 cpu.memory_mut().write_u64(place, value)?;
             } else {
                 cpu.memory_mut().write_u32(place, value as u32)?;
             }
         }
+        self.modules[index].imports = imports;
         Ok(())
     }
 

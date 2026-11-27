@@ -42,6 +42,8 @@ void dyn_free(DynCpu* cpu);
 
 // Runs until halted or until `budget` instructions have executed. Stores the executed count.
 uint32_t dyn_run(DynCpu* cpu, uint64_t budget, uint64_t* executed);
+// Executes exactly one instruction (translated on its own). Same halt bits as dyn_run.
+uint32_t dyn_step(DynCpu* cpu);
 // Requests a halt; safe to call from another thread.
 void dyn_halt(DynCpu* cpu);
 
