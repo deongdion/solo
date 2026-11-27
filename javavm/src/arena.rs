@@ -13,6 +13,7 @@ const CHUNK: u64 = 1 << 20;
 const LARGE: u64 = 256 << 10;
 const ALIGN: u64 = 16;
 
+#[derive(Clone)]
 pub struct Arena {
     low: u64,
     high: u64,

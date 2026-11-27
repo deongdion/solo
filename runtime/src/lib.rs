@@ -126,6 +126,7 @@ impl Options {
     }
 }
 
+#[derive(Clone)]
 struct DirResolver {
     dirs: Vec<PathBuf>,
 }
@@ -208,6 +209,52 @@ impl Emulator {
 
     pub fn arch(&self) -> Arch {
         self.cpu.arch()
+    }
+
+    /// An independent copy of this emulator: guest memory and registers, loaded modules, kernel
+    /// state (files, brk, mmap cursor, random state), and the Java side with each JNI handler's
+    /// `Jni::fork`. Fork after `JNI_OnLoad` to start pool workers without loading again.
+    /// Translated code is not copied, so the copy's first calls translate again.
+    pub fn fork(&self) -> Result<Emulator, Error> {
+        if self.depth != 0 {
+            return Err(Error::Backend(backend::Error::Backend("fork during a call".into())));
+        }
+        let vm = self.vm.fork().map_err(|error| Error::Jni { error, caller: String::new() })?;
+        Ok(Emulator {
+            cpu: self.cpu.fork()?,
+            linker: self.linker.clone(),
+            kernel: self.kernel.clone(),
+            resolver: self.resolver.clone(),
+            host: self.host.clone(),
+            vm,
+            collect_at: self.collect_at,
+            onload_events: self.onload_events.clone(),
+            budget: self.budget,
+            depth: 0,
+            precise_faults: self.precise_faults,
+        })
+    }
+
+    /// Makes this emulator a copy of `template`, as `fork` would, but keeps this one's CPU
+    /// engine. Used to reset pool workers.
+    pub fn restore(&mut self, template: &Emulator) -> Result<(), Error> {
+        if self.depth != 0 || template.depth != 0 {
+            return Err(Error::Backend(backend::Error::Backend("restore during a call".into())));
+        }
+        if self.cpu.arch() != template.cpu.arch() {
+            return Err(Error::Backend(backend::Error::Backend("restore across architectures".into())));
+        }
+        self.vm = template.vm.fork().map_err(|error| Error::Jni { error, caller: String::new() })?;
+        self.cpu.restore(&*template.cpu)?;
+        self.linker = template.linker.clone();
+        self.kernel = template.kernel.clone();
+        self.resolver = template.resolver.clone();
+        self.host = template.host.clone();
+        self.collect_at = template.collect_at;
+        self.onload_events = template.onload_events.clone();
+        self.budget = template.budget;
+        self.precise_faults = template.precise_faults;
+        Ok(())
     }
 
     /// A handle that stops the running call from another thread with `Error::Interrupted`.

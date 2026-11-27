@@ -241,6 +241,16 @@ impl Cpu for Unicorn {
         self.interrupt.clone()
     }
 
+    fn restore(&mut self, from: &dyn Cpu) -> Result<(), Error> {
+        crate::restore_state(self, from)
+    }
+
+    fn fork(&self) -> Result<Box<dyn Cpu>, Error> {
+        let mut copy = Unicorn::new(self.arch)?;
+        crate::copy_state(self, &mut copy)?;
+        Ok(Box::new(copy))
+    }
+
     fn invalidate(&mut self, address: u64, length: u64) {
         let _ = self.uc.ctl_remove_cache(address, address + length);
     }

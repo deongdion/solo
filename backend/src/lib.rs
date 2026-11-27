@@ -139,6 +139,13 @@ pub trait Cpu: Send {
     fn invalidate(&mut self, address: u64, length: u64);
     /// The handle that interrupts this CPU from another thread.
     fn interrupt(&self) -> Interrupt;
+    /// A new CPU of the same kind and options with a copy of this one's memory and registers.
+    /// Translated code is not copied; the copy translates again on first use.
+    fn fork(&self) -> Result<Box<dyn Cpu>, Error>;
+
+    /// Replaces this CPU's memory and registers with a copy of `from`'s, keeping the engine
+    /// (creating a dynarmic JIT costs tens of milliseconds). Translated code is discarded.
+    fn restore(&mut self, from: &dyn Cpu) -> Result<(), Error>;
 
     /// Runs from `pc`.
     fn run(&mut self, pc: u64, budget: u64) -> Result<Stop, Error> {
@@ -159,6 +166,55 @@ pub trait Cpu: Send {
         self.set_reg(Reg::Sp, stack);
         Ok((stop, result))
     }
+}
+
+/// Copies every mapping (contents, permissions, labels) and the registers that matter between
+/// calls (general, SP, LR, PC, TLS, the low 64 bits of each FP/SIMD register) from `from` into
+/// `to`. Ranges `to` already maps (the trampoline) are overwritten in place.
+pub fn copy_state(from: &dyn Cpu, to: &mut dyn Cpu) -> Result<(), Error> {
+    let mappings: Vec<machine::Mapping> = from.memory().mappings().cloned().collect();
+    let mut page = vec![0u8; machine::PAGE_SIZE as usize];
+    for m in &mappings {
+        let length = m.end - m.start;
+        let fresh = to.memory().is_free(m.start, length);
+        if fresh {
+            to.map(m.start, length, m.perms, &m.label)?;
+        }
+        let mut at = m.start;
+        while at < m.end {
+            from.memory().read(at, &mut page)?;
+            // Fresh mappings are zero-filled; most of a process image is.
+            if !fresh || page.iter().any(|&b| b != 0) {
+                to.memory_mut().write(at, &page)?;
+            }
+            at += machine::PAGE_SIZE;
+        }
+        to.protect(m.start, length, m.perms)?;
+    }
+    let general = if from.arch() == Arch::Arm64 { 30 } else { 13 };
+    for i in 0..general {
+        to.set_reg(Reg::General(i), from.reg(Reg::General(i)));
+    }
+    for i in 0..32 {
+        to.set_reg(Reg::Fp(i), from.reg(Reg::Fp(i)));
+    }
+    for r in [Reg::Sp, Reg::Lr, Reg::Tls] {
+        to.set_reg(r, from.reg(r));
+    }
+    to.set_pc(from.pc());
+    Ok(())
+}
+
+/// `Cpu::restore` for any backend: unmaps everything but the trampoline, drops translated code,
+/// then copies `from`.
+pub fn restore_state(to: &mut dyn Cpu, from: &dyn Cpu) -> Result<(), Error> {
+    let own: Vec<(u64, u64)> = to.memory().mappings().filter(|m| m.start != TRAMPOLINE).map(|m| (m.start, m.end)).collect();
+    for (start, end) in own {
+        to.unmap(start, end - start)?;
+    }
+    let bits = to.memory().address_bits();
+    to.invalidate(0, 1u64 << bits);
+    copy_state(from, to)
 }
 
 /// Guest address of the return trampoline page.

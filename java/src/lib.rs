@@ -89,6 +89,10 @@ const HIERARCHY: &[(&str, &str, &[&str])] = &[
 pub struct Builtins;
 
 impl Jni for Builtins {
+    fn fork(&self) -> Option<Box<dyn Jni>> {
+        Some(Box::new(Builtins))
+    }
+
     fn call(&mut self, vm: &mut Vm, call: &Call) -> JResult<Value> {
         let key = format!("{}{}", call.name, call.desc);
         if let Some(this) = call.this {

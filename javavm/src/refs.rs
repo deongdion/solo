@@ -21,7 +21,7 @@ pub enum BadRef {
     Stale(u64),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Slab {
     slots: Vec<Option<ObjectId>>,
     free: Vec<usize>,
@@ -50,7 +50,7 @@ impl Slab {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Refs {
     /// Local references of every frame, innermost last.
     locals: Vec<Option<ObjectId>>,

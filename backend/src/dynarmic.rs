@@ -27,6 +27,8 @@ pub struct Dynarmic {
     executed: u64,
     events: Box<Events>,
     interrupt: crate::Interrupt,
+    code_cache: u64,
+    precise_faults: bool,
 }
 
 struct Handle(*mut sys::DynCpu);
@@ -119,7 +121,7 @@ impl Dynarmic {
             // SAFETY: see HaltTarget.
             unsafe { sys::dyn_halt(target.0) }
         })));
-        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events, interrupt };
+        let mut cpu = Dynarmic { arch, cpu: Handle(raw), memory, executed: 0, events, interrupt, code_cache, precise_faults };
         if arch == Arch::Arm32 {
             // SAFETY: valid handle; user mode, ARM state.
             unsafe { sys::dyn_set_reg(cpu.cpu.0, 16, 0x10) };
@@ -252,6 +254,16 @@ impl Cpu for Dynarmic {
 
     fn interrupt(&self) -> crate::Interrupt {
         self.interrupt.clone()
+    }
+
+    fn restore(&mut self, from: &dyn Cpu) -> Result<(), Error> {
+        crate::restore_state(self, from)
+    }
+
+    fn fork(&self) -> Result<Box<dyn Cpu>, Error> {
+        let mut copy = Dynarmic::with_options(self.arch, self.code_cache, self.precise_faults)?;
+        crate::copy_state(self, &mut copy)?;
+        Ok(Box::new(copy))
     }
 
     fn invalidate(&mut self, address: u64, length: u64) {

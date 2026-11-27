@@ -180,9 +180,11 @@ Built-in models (`java` crate, installed by default after the embedder's handler
 - Worker pool (`runtime::Pool`): one emulator per worker thread built by a factory, per-job deadline through one watchdog thread (fires at most 20 ms late), rebuild after a crash, deadline, budget, fatal JNI error or panic, optional rebuild after N jobs or above a committed-memory size, bounded queue (`PoolError::Full` instead of blocking), panics caught and reported.
 - tmbench `pool` mode, arm64 aesCbc16, two client threads per worker (same session, two runs each): direct instances k=1 74,289-98,994 calls/s, through the pool 49,053-54,343; k=8 direct 535,787-584,513, pool 189,884-294,704. unidbg M0 at k=8: 17,605. The pool costs about 8 µs per job at k=1, mostly cross-thread wake-up. Arming the watchdog used to wake its thread on every job; removing that wake-up raised pool k=1 from 40,098 to 49,053-58,883 calls/s.
 
+- Save/restore: `Emulator::fork` copies guest memory and registers, modules, kernel state and the Java side (host data is `Clone`; handlers implement `Jni::fork`) into a new instance; `Emulator::restore` does the same into an existing instance, keeping its CPU engine. `Pool::forking(config, template)` starts workers as forks and resets recycled workers with `restore`. tmbench `fork` mode, same session, two runs each: arm64 fresh init 265-325 ms, fork p50 37-39 ms, restore p50 8.3-9.9 ms; arm32 init 223-261 ms, fork 24-29 ms, restore 6.9-7.0 ms. Forked instances give the same output hashes. Creating a dynarmic JIT costs 22-30 ms whatever the code cache size (8-128 MiB measured), which is most of a fork and why restore keeps the engine. First call after fork or restore: 7-15 ms (translation again).
+
 Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-model commit measures aesCbc16 p50 9.8-9.9 µs here vs 5.4-5.6 µs then), so only same-session numbers are compared.
 
-Next: M3 signals and save/restore of the state after JNI_OnLoad; 24 h RSS soak.
+Next: M3 signals; 24 h RSS soak.
 
 ## Build
 

@@ -130,7 +130,46 @@ pub enum Data {
     /// The java.lang.Class object of a class.
     Class(ClassId),
     /// A host value attached by a model or the user (for example the entries of a HashMap).
-    Host(Box<dyn Any + Send>),
+    Host(Box<dyn HostData>),
+}
+
+/// A value kept inside an object. Any `Clone + Send` type qualifies; cloning lets an emulator be
+/// forked with its heap.
+pub trait HostData: Any + Send {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    fn clone_box(&self) -> Box<dyn HostData>;
+}
+
+impl<T: Any + Send + Clone> HostData for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn HostData> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Data {
+    fn clone(&self) -> Data {
+        match self {
+            Data::Plain => Data::Plain,
+            Data::String(s) => Data::String(s.clone()),
+            Data::Array(a) => Data::Array(a.clone()),
+            Data::Class(c) => Data::Class(*c),
+            Data::Host(h) => Data::Host((**h).clone_box()),
+        }
+    }
 }
 
 impl std::fmt::Debug for Data {
@@ -145,7 +184,7 @@ impl std::fmt::Debug for Data {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Object {
     pub class: ClassId,
     pub data: Data,
@@ -155,7 +194,7 @@ pub struct Object {
 
 /// Objects that reference other objects, for the collector. Host data is opaque; a model that
 /// keeps objects inside `Data::Host` registers them as children through `Heap::retain_in`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Heap {
     slots: Vec<Option<Object>>,
     free: Vec<u32>,

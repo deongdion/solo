@@ -32,6 +32,7 @@ struct Entry {
 }
 
 /// Host data of a map, or of a set (a map whose values are unused).
+#[derive(Clone)]
 pub(crate) struct MapData {
     kind: MapKind,
     set: bool,
@@ -42,17 +43,20 @@ pub(crate) struct MapData {
 }
 
 /// Host data of a list or a view snapshot.
+#[derive(Clone)]
 pub(crate) struct Seq {
     items: Vec<Option<ObjectId>>,
     /// Lists accept `get(int)` and `add`; views do not.
     list: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct Iter {
     items: Vec<Option<ObjectId>>,
     next: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct EntryData {
     key: Option<ObjectId>,
     value: Option<ObjectId>,
@@ -301,7 +305,7 @@ fn map_method(vm: &mut Vm, call: &Call, this: ObjectId, key: &str) -> JResult<Op
 fn take(vm: &mut Vm, id: ObjectId) -> MapData {
     let object = vm.heap.get_mut(id).expect("live");
     match std::mem::replace(&mut object.data, Data::Plain) {
-        Data::Host(b) => *b.downcast::<MapData>().unwrap_or_else(|_| unreachable!("checked map data")),
+        Data::Host(b) => *b.into_any().downcast::<MapData>().unwrap_or_else(|_| unreachable!("checked map data")),
         _ => unreachable!("checked map data"),
     }
 }

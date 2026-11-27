@@ -6,9 +6,11 @@ use javavm::{Call, CallKind, Data, FieldAccess, JResult, JType, ObjectId, Value,
 use crate::{object_arg, throw};
 
 /// Host data of a StringBuilder.
+#[derive(Clone)]
 pub(crate) struct Builder(pub Vec<u16>);
 
 /// Host data of a Charset: its canonical name.
+#[derive(Clone)]
 pub(crate) struct Charset(pub String);
 
 const BOXES: &[(&str, JType)] = &[

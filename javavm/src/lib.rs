@@ -18,14 +18,14 @@ pub mod value;
 
 use std::collections::{BTreeMap, HashMap};
 
-pub use heap::{Array, ClassId, Data, Heap, Object, ObjectId};
+pub use heap::{Array, ClassId, Data, Heap, HostData, Object, ObjectId};
 pub use refs::{RefKind, Refs};
 pub use value::{JType, MethodSig, Value};
 
 /// `JNI_VERSION_1_6`, what ART reports.
 pub const JNI_VERSION: u32 = 0x0001_0006;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
     /// The java.lang.Class object.
@@ -137,6 +137,11 @@ pub trait Jni: Send {
         let _ = (vm, name);
         None
     }
+
+    /// The handler for a forked VM (`Vm::fork`); `None` makes forking fail.
+    fn fork(&self) -> Option<Box<dyn Jni>> {
+        None
+    }
 }
 
 /// What happens when no handler answers a call or field read (PLAN.md F1).
@@ -174,6 +179,8 @@ pub enum JniError {
     Fatal(String),
     #[error("JNI {function}: {problem}")]
     Misuse { function: &'static str, problem: String },
+    #[error("handler cannot be forked (implement Jni::fork)")]
+    NotForkable,
     #[error(transparent)]
     Arena(#[from] arena::ArenaError),
     #[error(transparent)]
@@ -222,6 +229,40 @@ pub struct Vm {
 }
 
 impl Vm {
+    /// A copy of the whole Java side (heap, references, classes, IDs, lent buffers) with each
+    /// handler's `fork`. The guest side (JNIEnv, buffers) must be copied with it (the runtime's
+    /// `Emulator::fork` does both).
+    pub fn fork(&self) -> Result<Vm, JniError> {
+        let handler = match &self.handler {
+            Some(h) => Some(h.fork().ok_or(JniError::NotForkable)?),
+            None => None,
+        };
+        let models = self.models.iter().map(|m| m.fork().ok_or(JniError::NotForkable)).collect::<Result<_, _>>()?;
+        Ok(Vm {
+            heap: self.heap.clone(),
+            refs: self.refs.clone(),
+            classes: self.classes.clone(),
+            class_names: self.class_names.clone(),
+            methods: self.methods.clone(),
+            method_index: self.method_index.clone(),
+            fields: self.fields.clone(),
+            field_index: self.field_index.clone(),
+            pending: self.pending,
+            policy: self.policy,
+            handler,
+            models,
+            unhandled: self.unhandled.clone(),
+            events: self.events.clone(),
+            warnings: self.warnings.clone(),
+            arena: self.arena.clone(),
+            lent: self.lent.clone(),
+            pinned: self.pinned.clone(),
+            env: self.env,
+            java_vm: self.java_vm,
+            caller: self.caller,
+        })
+    }
+
     /// JNI buffers are placed in `[low, high)` of the guest address space.
     pub fn new(low: u64, high: u64) -> Vm {
         let mut vm = Vm {
@@ -372,7 +413,7 @@ impl Vm {
     }
 
     /// An object of `class` carrying host data.
-    pub fn new_host_object(&mut self, class: &str, data: Box<dyn std::any::Any + Send>) -> ObjectId {
+    pub fn new_host_object(&mut self, class: &str, data: Box<dyn HostData>) -> ObjectId {
         let class = self.class(class);
         self.heap.alloc(Object { class, data: Data::Host(data), fields: HashMap::new() })
     }
@@ -441,14 +482,14 @@ impl Vm {
 
     pub fn host_data<T: 'static>(&self, id: ObjectId) -> Option<&T> {
         match &self.heap.get(id)?.data {
-            Data::Host(b) => b.downcast_ref(),
+            Data::Host(b) => b.as_any().downcast_ref(),
             _ => None,
         }
     }
 
     pub fn host_data_mut<T: 'static>(&mut self, id: ObjectId) -> Option<&mut T> {
         match &mut self.heap.get_mut(id)?.data {
-            Data::Host(b) => b.downcast_mut(),
+            Data::Host(b) => b.as_any_mut().downcast_mut(),
             _ => None,
         }
     }

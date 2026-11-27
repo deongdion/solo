@@ -112,6 +112,7 @@ pub struct Report {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone)]
 pub struct Linker {
     pub modules: Vec<Module>,
     pub report: Report,

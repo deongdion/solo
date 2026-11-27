@@ -3,7 +3,7 @@
 //! 1000 iterations. Output hashes are the first 16 hex digits of SHA-256, as Baseline prints them,
 //! so results compare line by line with bench/baseline/results.txt.
 //!
-//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|throughput <instances> <seconds>|pool <workers> <seconds>]
+//! Usage: tmbench <arm64|arm32> [dynarmic|unicorn] [latency|fork|throughput <instances> <seconds>|pool|poolfork <workers> <seconds>]
 //!
 //! `throughput` runs one instance per thread directly; `pool` runs the same call as jobs of a
 //! `runtime::Pool` (with its per-job deadline) fed by two client threads per worker.
@@ -93,12 +93,57 @@ fn main() {
         Some(other) => panic!("backend {other} not available in this build"),
     };
     let mode = args.get(3).map(String::as_str).unwrap_or("latency");
-    if mode == "pool" {
+    if mode == "fork" {
+        // Cost of Emulator::fork against a fresh build, and the forked instance's call latency.
+        let mut emu = build(arch, backend);
+        for _ in 0..500 {
+            aes(&mut emu);
+        }
+        let mut times = Vec::new();
+        let mut last = None;
+        for _ in 0..20 {
+            let t = Instant::now();
+            last = Some(emu.fork().expect("fork"));
+            times.push(t.elapsed().as_nanos());
+        }
+        let mut copy = last.unwrap();
+        let t = Instant::now();
+        let first = aes(&mut copy);
+        let first_call = t.elapsed();
+        println!("fork {} first_call_us={:.1}", stats(times), first_call.as_secs_f64() * 1e6);
+        // Reset of a used instance in place (what a pool does on recycle), keeping its JIT.
+        let mut restores = Vec::new();
+        for _ in 0..20 {
+            aes(&mut copy);
+            let t = Instant::now();
+            copy.restore(&emu).expect("restore");
+            restores.push(t.elapsed().as_nanos());
+        }
+        let t = Instant::now();
+        aes(&mut copy);
+        println!("restore {} first_call_us={:.1}", stats(restores), t.elapsed().as_secs_f64() * 1e6);
+        for _ in 0..1000 {
+            aes(&mut copy);
+        }
+        let mut latencies = Vec::with_capacity(10000);
+        let mut out = Vec::new();
+        for _ in 0..10000 {
+            let t = Instant::now();
+            out = aes(&mut copy);
+            latencies.push(t.elapsed().as_nanos());
+        }
+        println!("forked aesCbc16 {} out={} first_out={}", stats(latencies), sha(&out), sha(&first));
+        println!("guest_committed_kb={}", copy.cpu.memory().committed() / 1024);
+        return;
+    }
+    if mode == "pool" || mode == "poolfork" {
         let workers: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(1);
         let seconds: u64 = args.get(5).and_then(|a| a.parse().ok()).unwrap_or(10);
         let started = Instant::now();
         let config = runtime::PoolConfig { workers, queue_limit: workers * 4, ..runtime::PoolConfig::default() };
-        let pool = std::sync::Arc::new(
+        let pool = if mode == "poolfork" {
+            runtime::Pool::forking(config, build(arch, backend))
+        } else {
             runtime::Pool::new(config, move || {
                 let mut emu = build(arch, backend);
                 for _ in 0..500 {
@@ -106,8 +151,8 @@ fn main() {
                 }
                 Ok(emu)
             })
-            .expect("pool"),
-        );
+        };
+        let pool = std::sync::Arc::new(pool.expect("pool"));
         println!("init_all_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0);
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let clients: Vec<_> = (0..workers * 2)

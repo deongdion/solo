@@ -33,6 +33,7 @@ pub enum Node {
     Directory,
 }
 
+#[derive(Clone)]
 pub struct Vfs {
     root: Option<PathBuf>,
     /// Files created or written by the guest, and virtual files the runtime provides.

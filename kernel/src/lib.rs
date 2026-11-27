@@ -118,6 +118,7 @@ pub struct Unhandled {
     pub first_pc: u64,
 }
 
+#[derive(Clone)]
 pub struct Kernel {
     pub config: Config,
     pub vfs: Vfs,

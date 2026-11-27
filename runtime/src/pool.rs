@@ -63,7 +63,11 @@ pub struct PoolStats {
     pub panics: u64,
     /// Emulators built, including the first one of each worker.
     pub builds: u64,
+    /// Workers reset in place from the template (`Pool::forking`) instead of rebuilt.
+    pub resets: u64,
 }
+
+type Reset = Arc<dyn Fn(&mut Emulator) -> Result<(), Error> + Send + Sync>;
 
 type Job = Box<dyn FnOnce(&mut Emulator) -> Outcome + Send>;
 
@@ -108,6 +112,13 @@ impl Pool {
     where
         F: Fn() -> Result<Emulator, Error> + Send + Sync + 'static,
     {
+        Pool::start(config, factory, None)
+    }
+
+    fn start<F>(config: PoolConfig, factory: F, reset: Option<Reset>) -> Result<Pool, PoolError>
+    where
+        F: Fn() -> Result<Emulator, Error> + Send + Sync + 'static,
+    {
         let factory = Arc::new(factory);
         let shared = Arc::new(Shared { stats: Mutex::new(PoolStats::default()), watchdog: Watchdog::start() });
         let (sender, receiver) = mpsc::sync_channel::<Job>(config.queue_limit);
@@ -116,9 +127,10 @@ impl Pool {
         let mut workers = Vec::new();
         for index in 0..config.workers.max(1) {
             let (factory, receiver, shared, ready, config) = (factory.clone(), receiver.clone(), shared.clone(), ready_tx.clone(), config.clone());
+            let reset = reset.clone();
             let handle = std::thread::Builder::new()
                 .name(format!("emulator-{index}"))
-                .spawn(move || worker(config, factory.as_ref(), receiver, shared, ready))
+                .spawn(move || worker(config, factory.as_ref(), reset, receiver, shared, ready))
                 .map_err(|e| PoolError::Panicked(format!("spawn: {e}")))?;
             workers.push(handle);
         }
@@ -138,6 +150,16 @@ impl Pool {
             }
         }
         Ok(pool)
+    }
+
+    /// Workers start as forks of `template` (`Emulator::fork`), so modules are loaded and
+    /// `JNI_OnLoad` runs once. A worker that must be recycled is reset in place from the template
+    /// (`Emulator::restore`), keeping its CPU engine; it is rebuilt only if that fails.
+    pub fn forking(config: PoolConfig, template: Emulator) -> Result<Pool, PoolError> {
+        let template = Arc::new(Mutex::new(template));
+        let source = template.clone();
+        let reset: Reset = Arc::new(move |emu: &mut Emulator| emu.restore(&source.lock().unwrap_or_else(|e| e.into_inner())));
+        Pool::start(config, move || template.lock().unwrap_or_else(|e| e.into_inner()).fork(), Some(reset))
     }
 
     /// Queues a job. Fails with `Full` instead of blocking when the queue is at its limit.
@@ -222,6 +244,7 @@ impl Drop for Pool {
 fn worker(
     config: PoolConfig,
     factory: &(dyn Fn() -> Result<Emulator, Error> + Send + Sync),
+    reset: Option<Reset>,
     receiver: Arc<Mutex<Receiver<Job>>>,
     shared: Arc<Shared>,
     ready: mpsc::Sender<Result<(), Error>>,
@@ -285,11 +308,21 @@ fn worker(
         recycle |= config.recycle_after_jobs != 0 && jobs_on_this >= config.recycle_after_jobs;
         recycle |= config.recycle_above_committed != 0 && committed > config.recycle_above_committed;
         if recycle {
-            emu = None;
-            // Rebuild now, so the next job does not wait for it.
-            if let Ok(e) = build(&shared) {
-                emu = Some(e);
+            // Reset in place when possible, else rebuild; either now, so the next job does not
+            // wait for it.
+            let reset_ok = match (&reset, emu.as_mut()) {
+                (Some(reset), Some(e)) => catch_unwind(AssertUnwindSafe(|| reset(e))).is_ok_and(|r| r.is_ok()),
+                _ => false,
+            };
+            if reset_ok {
+                shared.stats.lock().unwrap_or_else(|e| e.into_inner()).resets += 1;
                 jobs_on_this = 0;
+            } else {
+                emu = None;
+                if let Ok(e) = build(&shared) {
+                    emu = Some(e);
+                    jobs_on_this = 0;
+                }
             }
         }
     }
