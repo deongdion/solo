@@ -178,3 +178,31 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     if ((*env)->RegisterNatives(env, c, methods, 2) != 0) return -2;
     return JNI_VERSION_1_6;
 }
+
+// Walks a java.util.Map through the interfaces, as natives reading request parameters do.
+JNIEXPORT jstring JNICALL Java_fix_Native_walk(JNIEnv* env, jclass self, jobject map) {
+    used = 0;
+    jclass map_class = (*env)->FindClass(env, "java/util/Map");
+    jclass set_class = (*env)->FindClass(env, "java/util/Set");
+    jclass iterator_class = (*env)->FindClass(env, "java/util/Iterator");
+    jclass integer_class = (*env)->FindClass(env, "java/lang/Integer");
+    jmethodID size = (*env)->GetMethodID(env, map_class, "size", "()I");
+    jmethodID key_set = (*env)->GetMethodID(env, map_class, "keySet", "()Ljava/util/Set;");
+    jmethodID get = (*env)->GetMethodID(env, map_class, "get", "(Ljava/lang/Object;)Ljava/lang/Object;");
+    jmethodID iterator = (*env)->GetMethodID(env, set_class, "iterator", "()Ljava/util/Iterator;");
+    jmethodID has_next = (*env)->GetMethodID(env, iterator_class, "hasNext", "()Z");
+    jmethodID next = (*env)->GetMethodID(env, iterator_class, "next", "()Ljava/lang/Object;");
+    jmethodID int_value = (*env)->GetMethodID(env, integer_class, "intValue", "()I");
+    say("size %d:", (*env)->CallIntMethod(env, map, size));
+    jobject keys = (*env)->CallObjectMethod(env, map, key_set);
+    jobject it = (*env)->CallObjectMethod(env, keys, iterator);
+    while ((*env)->CallBooleanMethod(env, it, has_next)) {
+        jstring key = (jstring)(*env)->CallObjectMethod(env, it, next);
+        jobject value = (*env)->CallObjectMethod(env, map, get, key);
+        const char* k = (*env)->GetStringUTFChars(env, key, 0);
+        say(" %s=%d", k, (*env)->CallIntMethod(env, value, int_value));
+        (*env)->ReleaseStringUTFChars(env, key, k);
+    }
+    say("\n");
+    return (*env)->NewStringUTF(env, out);
+}

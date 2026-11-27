@@ -610,6 +610,12 @@ impl Vm {
     /// Runs a Java method call through the handlers and the policy. A thrown exception becomes
     /// pending and the call returns zero.
     pub fn invoke(&mut self, kind: CallKind, method: &Method, this: Option<ObjectId>, args: &[Value]) -> Result<Value, JniError> {
+        if args.len() != method.sig.params.len() {
+            return Err(JniError::Misuse {
+                function: "invoke",
+                problem: format!("{}{} takes {} arguments, {} given", method.name, method.desc, method.sig.params.len(), args.len()),
+            });
+        }
         let class_name = self.class_name(method.class).to_string();
         let call = Call { kind, class: &class_name, name: &method.name, desc: &method.desc, sig: &method.sig, this, args };
         let zero = method.sig.ret.zero();

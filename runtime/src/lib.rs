@@ -91,6 +91,8 @@ pub struct Options {
     /// default: it costs 7-27% on dynarmic (PLAN.md); without it the PC is the translated block's.
     /// unicorn faults are always precise.
     pub precise_faults: bool,
+    /// Built-in java.lang/java.util models (the `java` crate), asked after the embedder's handler.
+    pub java_models: bool,
 }
 
 impl Options {
@@ -108,6 +110,7 @@ impl Options {
                 "PATH=/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin".into(),
             ],
             precise_faults: false,
+            java_models: true,
         }
     }
 }
@@ -186,6 +189,9 @@ impl Emulator {
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
+        if options.java_models {
+            java::install(&mut emulator.vm);
+        }
         Ok(emulator)
     }
 

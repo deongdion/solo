@@ -165,3 +165,30 @@ impl Jni for WithoutMix {
         Host.call(vm, call)
     }
 }
+
+/// Native.walk reads a HashMap through Map, Set and Iterator with no handler code (PLAN.md F11);
+/// bench/jni/expected_map.txt is unidbg's output with reflection opened to java.util (without
+/// `--add-opens`, unidbg fails on HashMap$KeySet.iterator; see bench/jni/README.md).
+fn walk(arch: Arch) {
+    let Some((_, mut emu)) = run(arch) else { return };
+    let words = ["zeta", "alpha", "beta", "gamma", "delta", "epsilon", "eta", "theta", "iota", "kappa"];
+    let entries: Vec<(Value, Value)> =
+        words.iter().enumerate().map(|(i, w)| (Value::Object(emu.vm.new_string(w)), Value::Int(i as i32))).collect();
+    let map = java::new_map(&mut emu.vm, java::MapKind::Hash, &entries);
+    let r = emu
+        .call_static("fix/Native", "walk", "(Ljava/util/Map;)Ljava/lang/String;", &[Value::Object(map)])
+        .unwrap_or_else(|e| panic!("walk: {e}\n{}", emu.summary()));
+    let expected = std::fs::read_to_string(root().join("bench/jni/expected_map.txt")).unwrap();
+    assert_eq!(emu.vm.string(r.object().unwrap()).unwrap(), expected);
+    assert!(emu.summary().unhandled_jni.is_empty());
+}
+
+#[test]
+fn walk_map_arm64() {
+    walk(Arch::Arm64);
+}
+
+#[test]
+fn walk_map_arm32() {
+    walk(Arch::Arm32);
+}

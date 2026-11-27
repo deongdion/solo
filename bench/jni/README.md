@@ -42,5 +42,20 @@ Two places where unidbg differs on purpose from the Rust runtime, not covered by
   handler (`JniRun` repeats the native's formula); the runtime calls the registered native, as ART
   does.
 
+## Reading a HashMap (PLAN.md F11)
+
+`Java_fix_Native_walk` reads a `java.util.Map` through `Map.size`, `Map.keySet`, `Set.iterator`,
+`Iterator.hasNext/next`, `Map.get` and `Integer.intValue`, the way natives read request
+parameters. `MapRun.java` passes a `HashMap` of ten strings under unidbg (arm64, dynarmic):
+
+| unidbg setup | result |
+|---|---|
+| `AbstractJni` (map wrapped by `ProxyDvmObject.createObject`) | `UnsupportedOperationException: java/util/Map->size()I`; the native returns null |
+| `ProxyClassFactory` | `InaccessibleObjectException`: `HashMap$KeySet.iterator()` cannot be made accessible (JDK 21 module system); the native returns null |
+| `ProxyClassFactory` with `--add-opens java.base/java.util=ALL-UNNAMED` | works: `expected_map.txt` (arm64 and armv7) |
+
+The Rust runtime produces `expected_map.txt` on both architectures with no handler code: the
+built-in models (`java` crate) answer the calls, and HashMap iterates in OpenJDK's order.
+
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).
