@@ -1,12 +1,52 @@
 //! Instruction trace on the emulator (`inspect::trace`): started and stopped between or during
 //! calls; while on, the run loop single-steps and records the instructions in the trace's ranges.
 
-use backend::{Arch, Reg, Stop};
+use backend::{Access, Arch, Reg, Stop};
 use inspect::trace::{Executed, Trace, TraceConfig};
 
 use crate::{Emulator, Error};
 
+/// A guest data access to watched memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryAccess {
+    /// The instruction that made it, known while an instruction trace runs (the run loop then
+    /// steps one instruction at a time); otherwise None.
+    pub pc: Option<u64>,
+    pub address: u64,
+    pub size: u32,
+    pub write: bool,
+    /// The value read or written (low 8 bytes).
+    pub value: u64,
+}
+
+impl MemoryAccess {
+    fn new(pc: Option<u64>, a: Access) -> MemoryAccess {
+        MemoryAccess { pc, address: a.address, size: a.size, write: a.write, value: a.value }
+    }
+}
+
 impl Emulator {
+    /// Records the guest's reads and writes of `[start, end)` (any number of ranges; mapped now
+    /// or later) until `unwatch_memory`. On dynarmic the pages of the range take the JIT's slow
+    /// path; the rest of memory runs as before.
+    pub fn watch_memory(&mut self, start: u64, end: u64) -> Result<(), Error> {
+        self.cpu.watch_memory(start, end)?;
+        Ok(())
+    }
+
+    /// Stops recording and drops what was not taken.
+    pub fn unwatch_memory(&mut self) {
+        self.cpu.unwatch_memory();
+        self.accesses.clear();
+    }
+
+    /// Accesses recorded since the last call, oldest first.
+    pub fn take_accesses(&mut self) -> Vec<MemoryAccess> {
+        let mut out = std::mem::take(&mut self.accesses);
+        out.extend(self.cpu.take_accesses().into_iter().map(|a| MemoryAccess::new(None, a)));
+        out
+    }
+
     /// Starts an instruction trace (replacing a running one).
     pub fn start_trace(&mut self, config: TraceConfig) {
         self.trace = Some(Trace::new(config));
@@ -72,6 +112,10 @@ impl Emulator {
             }
             let stop = self.cpu.step()?;
             run += 1;
+            let accesses = self.cpu.take_accesses();
+            if !accesses.is_empty() {
+                self.accesses.extend(accesses.into_iter().map(|a| MemoryAccess::new(Some(pc), a)));
+            }
             if let Some(trace) = self.trace.as_mut() {
                 trace.stepped += 1;
             }

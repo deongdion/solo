@@ -35,6 +35,7 @@ const A32_C13_C0_3: i32 = RegisterARM::C13_C0_3 as i32;
 #[derive(Default)]
 struct Events {
     stop: Option<Stop>,
+    accesses: Vec<crate::Access>,
 }
 
 /// unicorn on top of the same `Memory` pages, mapped with `uc_mem_map_ptr`.
@@ -48,6 +49,8 @@ pub struct Unicorn {
     executed: u64,
     /// Stops a run with uc_emu_stop, which unicorn's own timeout thread also calls.
     interrupt: crate::Interrupt,
+    /// Memory hooks of `watch_memory`.
+    watches: Vec<unicorn_engine::UcHookId>,
 }
 
 unsafe extern "C" {
@@ -126,7 +129,7 @@ impl Unicorn {
             // SAFETY: see StopTarget.
             unsafe { uc_emu_stop(target.0) };
         })));
-        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0, interrupt };
+        let mut cpu = Unicorn { arch, uc, memory: Memory::new(arch.address_bits()), next: 0, executed: 0, interrupt, watches: Vec::new() };
         cpu.map(TRAMPOLINE, machine::PAGE_SIZE, Perms::RX, "[trampoline]")?;
         cpu.memory.write(TRAMPOLINE, &trampoline_code(arch))?;
         Ok(cpu)
@@ -291,5 +294,36 @@ impl Cpu for Unicorn {
 
     fn invalidate(&mut self, address: u64, length: u64) {
         let _ = self.uc.ctl_remove_cache(address, address + length);
+    }
+
+    fn watch_memory(&mut self, start: u64, end: u64) -> Result<(), Error> {
+        if end <= start {
+            return Ok(());
+        }
+        // MEM_READ_AFTER carries the value read; MEM_WRITE the value about to be written.
+        let hook = self
+            .uc
+            .add_mem_hook(HookType::MEM_WRITE | HookType::MEM_READ_AFTER, start, end - 1, |uc, kind, address, size, value| {
+                let write = matches!(kind, MemType::WRITE);
+                let value = if size >= 8 { value as u64 } else { value as u64 & ((1u64 << (size * 8)) - 1) };
+                uc.get_data_mut().accesses.push(crate::Access { address, size: size as u32, write, value });
+                true
+            })
+            .map_err(uc_error)?;
+        self.watches.push(hook);
+        // Code translated before the hook existed carries no call to it: retranslate.
+        self.uc.ctl_flush_tb().map_err(uc_error)?;
+        Ok(())
+    }
+
+    fn unwatch_memory(&mut self) {
+        for hook in std::mem::take(&mut self.watches) {
+            let _ = self.uc.remove_hook(hook);
+        }
+        self.uc.get_data_mut().accesses.clear();
+    }
+
+    fn take_accesses(&mut self) -> Vec<crate::Access> {
+        std::mem::take(&mut self.uc.get_data_mut().accesses)
     }
 }

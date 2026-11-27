@@ -97,7 +97,8 @@ strlen("hello")`; `fix_global` starts with `adrp` on arm64, `Java_fix_Native_ste
 `runtime/tests/hooks.rs` checks the runtime's hooks on them; `HookRun.java <arm64|arm32>
 <libjnifix.so> <none|hookzz|hookzzpost|xhook>` times unidbg's HookZz on `fix_add` and xHook on
 `strlen` (numbers in PLAN.md M4). `TraceRun.java <arm64|arm32> <libjnifix.so> [cold]` times unidbg's
-`traceCode` on the module (unicorn2) and counts its lines; `cold` sets it before the first call.
+`traceCode` on the module (unicorn2) and counts its lines; `cold` sets it before the first call; `read` / `readcold` do the same for `traceRead` (set TRACE_ECHO
+to print its lines).
 
 Regenerate: `bash build.sh`, then compile and run `JniRun.java` as `bench/parity/run.ps1` does for
 `ParityRun.java` (`JniRun <unicorn2|dynarmic> <arm64|arm32> <libjnifix.so> <out>`).

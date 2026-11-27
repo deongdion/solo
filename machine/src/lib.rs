@@ -128,6 +128,10 @@ pub struct Memory {
     committed: u64,
     /// Upper bound for `committed`; a guest that maps more gets an error instead of exhausting the host.
     limit: u64,
+    /// Watched ranges: their pages are absent from `table` (so a JIT reading the table takes its
+    /// slow path, where the access can be recorded) and kept in `watched` by page index.
+    watch_ranges: Vec<(u64, u64)>,
+    watched: BTreeMap<usize, *mut u8>,
 }
 
 /// Default host memory limit per address space.
@@ -147,6 +151,8 @@ impl Memory {
             mappings: BTreeMap::new(),
             committed: 0,
             limit: DEFAULT_LIMIT,
+            watch_ranges: Vec::new(),
+            watched: BTreeMap::new(),
         }
     }
 
@@ -174,8 +180,78 @@ impl Memory {
 
     /// Host address of a guest page, for backends that map pages themselves.
     pub fn host_page(&self, address: u64) -> Option<*mut u8> {
-        let page = *self.table.get((address >> PAGE_BITS) as usize)?;
+        let page = self.page_ptr((address >> PAGE_BITS) as usize);
         (!page.is_null()).then_some(page)
+    }
+
+    fn page_ptr(&self, index: usize) -> *mut u8 {
+        match self.table.get(index) {
+            Some(page) if !page.is_null() => *page,
+            Some(_) => self.watched.get(&index).copied().unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    }
+
+    /// Takes the pages of `[start, end)`, mapped now or later, out of the page table so that a
+    /// JIT's accesses to them go through its slow path (see `watched_access`). Host-side reads
+    /// and writes are unaffected.
+    pub fn watch(&mut self, start: u64, end: u64) {
+        self.watch_ranges.push((start, end));
+        let first = (start >> PAGE_BITS) as usize;
+        let last = (page_ceil(end) >> PAGE_BITS) as usize;
+        for index in first..last.min(self.table.len()) {
+            self.watch_page(index);
+        }
+    }
+
+    fn watch_page(&mut self, index: usize) {
+        let page = std::mem::replace(&mut self.table[index], std::ptr::null_mut());
+        if !page.is_null() {
+            self.watched.insert(index, page);
+        }
+    }
+
+    /// Puts every watched page back into the page table.
+    pub fn unwatch_all(&mut self) {
+        for (index, page) in std::mem::take(&mut self.watched) {
+            self.table[index] = page;
+        }
+        self.watch_ranges.clear();
+    }
+
+    /// Whether `[address, address + size)` overlaps a watched range (finer than the pages).
+    pub fn in_watch_range(&self, address: u64, size: u64) -> bool {
+        self.watch_ranges.iter().any(|(s, e)| address < *e && address + size > *s)
+    }
+
+    pub fn is_watched(&self, address: u64) -> bool {
+        self.watched.contains_key(&((address >> PAGE_BITS) as usize))
+    }
+
+    /// The slow-path access of a JIT: `kind` 0 reads into `data`, 1 writes `data`, 2 fetches code
+    /// (a read). False when a byte is not mapped. Whether the access touched a watched page is
+    /// for the caller to check with `is_watched`.
+    ///
+    /// # Safety
+    /// Writes through the page pointers while `self` is borrowed shared: no other reference to
+    /// the written bytes may be live (the JIT calls this while it is the only user of memory).
+    pub unsafe fn watched_access(&self, address: u64, kind: u32, data: &mut [u8]) -> bool {
+        let mut done = 0usize;
+        while done < data.len() {
+            let at = address.wrapping_add(done as u64);
+            let Some(host) = self.host(at) else { return false };
+            let chunk = (data.len() - done).min((PAGE_SIZE - (at & PAGE_MASK)) as usize);
+            // SAFETY: host is valid for `chunk` bytes within one page; see the function's contract.
+            unsafe {
+                if kind == 1 {
+                    std::ptr::copy_nonoverlapping(data[done..].as_ptr(), host, chunk);
+                } else {
+                    std::ptr::copy_nonoverlapping(host, data[done..].as_mut_ptr(), chunk);
+                }
+            }
+            done += chunk;
+        }
+        true
     }
 
     fn check_range(&self, address: u64, length: u64) -> Result<u64, Error> {
@@ -225,6 +301,13 @@ impl Memory {
         for page in 0..length >> PAGE_BITS {
             // SAFETY: page lies within the allocation.
             self.table[((address >> PAGE_BITS) + page) as usize] = unsafe { host.as_ptr().add((page << PAGE_BITS) as usize) };
+        }
+        if self.watch_ranges.iter().any(|(s, e)| *s < end && *e > address) {
+            for page in (address..end).step_by(PAGE_SIZE as usize) {
+                if self.watch_ranges.iter().any(|(s, e)| page < *e && page + PAGE_SIZE > *s) {
+                    self.watch_page((page >> PAGE_BITS) as usize);
+                }
+            }
         }
         self.allocations.insert(host.as_ptr() as usize, Allocation { host, length, live_pages: length >> PAGE_BITS });
         self.committed += length;
@@ -290,10 +373,13 @@ impl Memory {
 
     fn release_page(&mut self, page: u64) {
         let index = (page >> PAGE_BITS) as usize;
-        if self.table[index].is_null() {
-            return;
-        }
-        let host = std::mem::replace(&mut self.table[index], std::ptr::null_mut()) as usize;
+        let host = match std::mem::replace(&mut self.table[index], std::ptr::null_mut()) {
+            p if !p.is_null() => p as usize,
+            _ => match self.watched.remove(&index) {
+                Some(p) => p as usize,
+                None => return,
+            },
+        };
         let start = *self.allocations.range(..=host).next_back().expect("allocation").0;
         let allocation = self.allocations.get_mut(&start).expect("allocation");
         allocation.live_pages -= 1;
@@ -336,7 +422,7 @@ impl Memory {
     }
 
     fn host(&self, address: u64) -> Option<*mut u8> {
-        let page = *self.table.get((address >> PAGE_BITS) as usize)?;
+        let page = self.page_ptr((address >> PAGE_BITS) as usize);
         // SAFETY: offset stays inside the page.
         (!page.is_null()).then(|| unsafe { page.add((address & PAGE_MASK) as usize) })
     }
@@ -416,6 +502,38 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watched_pages_leave_the_table_but_stay_readable() {
+        let mut m = Memory::new(32);
+        m.map(0x10000, 0x3000, Perms::RW, "a").unwrap();
+        m.write(0x11000, b"abc").unwrap();
+        m.watch(0x11000, 0x11004);
+        let table = m.page_table();
+        // SAFETY: indexes within the table.
+        unsafe {
+            assert!(!(*table.add(0x10)).is_null());
+            assert!((*table.add(0x11)).is_null());
+            assert!(!(*table.add(0x12)).is_null());
+        }
+        assert!(m.is_watched(0x11fff) && !m.is_watched(0x12000));
+        assert_eq!(m.read_vec(0x11000, 3).unwrap(), b"abc");
+        let mut data = *b"xy";
+        // SAFETY: no other reference to the bytes.
+        assert!(unsafe { m.watched_access(0x11001, 1, &mut data) });
+        assert_eq!(m.read_vec(0x11000, 3).unwrap(), b"axy");
+        // A page mapped later inside a watched range is watched too.
+        m.watch(0x20000, 0x21000);
+        m.map(0x20000, 0x1000, Perms::RW, "b").unwrap();
+        assert!(m.is_watched(0x20000));
+        // Unmapping a watched page releases it; unwatching restores the rest.
+        m.unmap(0x20000, 0x1000).unwrap();
+        assert!(!m.is_watched(0x20000));
+        m.unwatch_all();
+        // SAFETY: as above.
+        unsafe { assert!(!(*m.page_table().add(0x11)).is_null()) };
+        assert_eq!(m.committed(), 0x3000);
+    }
 
     #[test]
     fn map_read_write_across_pages() {

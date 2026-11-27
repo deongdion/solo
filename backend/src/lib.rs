@@ -205,6 +205,13 @@ pub trait Cpu: Send {
     fn require_precise_faults(&mut self) -> Result<(), Error> {
         Ok(())
     }
+    /// Records the guest's data accesses to `[start, end)` from now on (`take_accesses`).
+    fn watch_memory(&mut self, start: u64, end: u64) -> Result<(), Error>;
+    /// Stops recording accesses.
+    fn unwatch_memory(&mut self);
+    /// Accesses recorded since the last call, oldest first.
+    fn take_accesses(&mut self) -> Vec<Access>;
+
     /// Whether a memory fault stops at the faulting instruction.
     fn precise_faults(&self) -> bool {
         true
@@ -298,6 +305,16 @@ pub fn restore_state(to: &mut dyn Cpu, from: &dyn Cpu) -> Result<(), Error> {
 /// `Stop::Exception` kind of a breakpoint instruction (BRK, BKPT), as dynarmic numbers it on both
 /// architectures.
 pub const EXCEPTION_BREAKPOINT: u32 = 8;
+
+/// A data access to watched memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Access {
+    pub address: u64,
+    pub size: u32,
+    pub write: bool,
+    /// The value read or written (its low 8 bytes, little-endian).
+    pub value: u64,
+}
 
 /// Offset in the trampoline page of the rt_sigreturn stub (ARM state on A32).
 pub const SIGRETURN_STUB_OFFSET: u64 = 0x20;

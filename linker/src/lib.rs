@@ -85,6 +85,11 @@ impl Module {
         self.symbols.lookup(name.as_bytes()).map(|s| self.bias.wrapping_add(s.value))
     }
 
+    /// Address of a `.symtab` symbol (local functions and objects; Thumb bit clear).
+    pub fn static_symbol(&self, name: &str) -> Option<u64> {
+        self.static_symbols.iter().find(|(_, n)| n == name).map(|(value, _)| self.bias.wrapping_add(*value))
+    }
+
     /// Nearest dynamic or `.symtab` symbol at or below `address`.
     pub fn closest_symbol(&self, address: u64) -> Option<(String, u64)> {
         let mut best: Option<(u64, u32)> = None;

@@ -23,6 +23,7 @@ use machine::Perms;
 
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
+pub use tracing::MemoryAccess;
 pub use host::HostFunction;
 pub use javavm::{self, JType, Jni, ObjectId, UnhandledPolicy, Value, Vm};
 pub use jni::OnLoadEvent;
@@ -185,6 +186,8 @@ pub struct Emulator {
     pub(crate) hooks: hooks::Hooks,
     /// Instruction trace while one runs (not copied by fork).
     pub(crate) trace: Option<inspect::trace::Trace>,
+    /// Watched accesses taken from the cpu while tracing, tagged with their instruction.
+    pub(crate) accesses: Vec<tracing::MemoryAccess>,
 }
 
 impl Emulator {
@@ -216,6 +219,7 @@ impl Emulator {
             depth: 0,
             hooks: hooks::Hooks::default(),
             trace: None,
+            accesses: Vec::new(),
         };
         emulator.setup(&options.env)?;
         emulator.install_jni()?;
@@ -251,6 +255,7 @@ impl Emulator {
             depth: 0,
             hooks: self.hooks.clone(),
             trace: None,
+            accesses: Vec::new(),
         })
     }
 

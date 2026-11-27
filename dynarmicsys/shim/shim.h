@@ -28,6 +28,10 @@ typedef struct DynHooks {
     // Whether the page holding `address` may be executed. Null allows every mapped page.
     // Called while translating, not per executed instruction.
     int32_t (*can_execute)(void* user, uint64_t address);
+    // An access to a page absent from the page table (a watched page, or unmapped): kind 0 reads
+    // `size` bytes into `data`, 1 writes them, 2 fetches code. Returns nonzero if it was done;
+    // zero makes it a fault. Null treats every such access as a fault.
+    int32_t (*on_access)(void* user, uint64_t address, uint32_t size, uint32_t kind, uint8_t* data);
 } DynHooks;
 
 // page_table: one host pointer per 4 KiB guest page (null when unmapped).

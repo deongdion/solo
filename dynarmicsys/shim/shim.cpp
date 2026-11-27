@@ -43,6 +43,10 @@ struct Common {
         halt(jit, static_cast<Dynarmic::HaltReason>(DYN_HALT_FAULT) | Dynarmic::HaltReason::MemoryAbort);
     }
 
+    bool slow(uint64_t address, uint32_t size, uint32_t kind, uint8_t* data) {
+        return hooks.on_access && hooks.on_access(hooks.user, address, size, kind, data) != 0;
+    }
+
     template <typename T>
     T read(VAddr address) {
         T value{};
@@ -51,6 +55,7 @@ struct Common {
             uint64_t at = static_cast<uint64_t>(address) + i;
             uint8_t* src = host(at);
             if (!src) {
+                if (slow(static_cast<uint64_t>(address), sizeof(T), 0, bytes)) return value;
                 fault(at, sizeof(T), 0);
                 return T{};
             }
@@ -68,6 +73,8 @@ struct Common {
             uint64_t at = static_cast<uint64_t>(address) + i;
             uint8_t* dst = host(at);
             if (!dst) {
+                T copy = value;
+                if (slow(static_cast<uint64_t>(address), sizeof(T), 1, reinterpret_cast<uint8_t*>(&copy))) return;
                 fault(at, sizeof(T), 1);
                 return;
             }
@@ -81,9 +88,13 @@ struct Common {
     // data faults instead of translating an unbounded run of non-branch words.
     std::optional<uint32_t> code(VAddr address) {
         uint64_t at = static_cast<uint64_t>(address);
-        uint8_t* src = host(at);
-        if (!src || (hooks.can_execute && hooks.can_execute(hooks.user, at) == 0)) return std::nullopt;
+        if (hooks.can_execute && hooks.can_execute(hooks.user, at) == 0) return std::nullopt;
         uint32_t value;
+        uint8_t* src = host(at);
+        if (!src) {
+            if (!slow(at, sizeof value, 2, reinterpret_cast<uint8_t*>(&value))) return std::nullopt;
+            return value;
+        }
         std::memcpy(&value, src, sizeof value);  // 4-byte aligned, so within one page
         return value;
     }

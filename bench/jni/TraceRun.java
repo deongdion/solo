@@ -30,6 +30,23 @@ public class TraceRun {
         Module module = dm.getModule();
         DvmClass c = vm.resolveClass("fix/Native");
         int n = 2000;
+        if (args.length > 2 && (args[2].equals("read") || args[2].equals("readcold"))) {
+            // traceRead over the module: lines per call, set before the first call or after warm-up.
+            boolean cold = args[2].equals("readcold");
+            if (!cold) for (int i = 0; i < 1000; i++) c.callStaticJniMethodInt(emulator, "hooked(II)I", 2, 3);
+            final long[] reads = {0};
+            emulator.traceRead(module.base, module.base + module.size).setRedirect(new PrintStream(new OutputStream() {
+                @Override
+                public void write(int b) {
+                    if (b == 10) reads[0]++;
+                    if (System.getenv("TRACE_ECHO") != null) System.out.write(b);
+                }
+            }));
+            c.callStaticJniMethodInt(emulator, "hooked(II)I", 2, 3);
+            System.out.printf("%s unidbg unicorn2: traceRead on the module %s: %d lines%n", args[0], cold ? "before the first call" : "after warm-up", reads[0]);
+            emulator.close();
+            return;
+        }
         if (args.length > 2 && args[2].equals("cold")) {
             // Trace before the module's code runs at all: lines for the first call.
             final long[] cold = {0};

@@ -13,6 +13,7 @@ const DEFAULT_CODE_CACHE: u64 = 0;
 
 struct Events {
     stop: Option<Stop>,
+    accesses: Vec<crate::Access>,
     /// The boxed memory of the same `Dynarmic`; only read, and only while the JIT runs.
     memory: *const Memory,
     no_execute: u32,
@@ -52,6 +53,7 @@ fn new_jit(arch: Arch, memory: &mut Memory, events: &mut Events, code_cache: u64
         on_exception: Some(on_exception),
         on_fault: Some(on_fault),
         can_execute: Some(can_execute),
+        on_access: Some(on_access),
     };
     let is64 = (arch == Arch::Arm64) as i32;
     let flags = if precise_faults { sys::DYN_PRECISE_FAULTS } else { 0 };
@@ -103,6 +105,28 @@ unsafe extern "C" fn on_fault(user: *mut c_void, address: u64, _size: u32, is_wr
     events.stop.get_or_insert(Stop::Fault { address, write: is_write != 0 });
 }
 
+unsafe extern "C" fn on_access(user: *mut c_void, address: u64, size: u32, kind: u32, data: *mut u8) -> i32 {
+    // SAFETY: as in on_svc; `memory` points into the Box owned by the same Dynarmic, which is not
+    // otherwise used while the JIT runs; `data` holds `size` bytes (at most 16).
+    let events = unsafe { &mut *(user as *mut Events) };
+    let memory = unsafe { &*events.memory };
+    if !memory.is_watched(address) && !memory.is_watched(address + size as u64 - 1) {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts_mut(data, size as usize) };
+    // SAFETY: the JIT is the only user of guest memory during this call.
+    if !unsafe { memory.watched_access(address, kind, bytes) } {
+        return 0;
+    }
+    if kind != 2 && memory.in_watch_range(address, size as u64) {
+        let mut value = [0u8; 8];
+        let n = bytes.len().min(8);
+        value[..n].copy_from_slice(&bytes[..n]);
+        events.accesses.push(crate::Access { address, size, write: kind == 1, value: u64::from_le_bytes(value) });
+    }
+    1
+}
+
 unsafe extern "C" fn can_execute(user: *mut c_void, address: u64) -> i32 {
     // SAFETY: as in on_svc; `memory` points into the Box owned by the same Dynarmic and is not
     // mutated while the JIT runs.
@@ -128,7 +152,7 @@ impl Dynarmic {
         let mut memory = Box::new(Memory::new(arch.address_bits()));
         // dynarmic's Exception::NoExecuteFault, as declared in its A64 and A32 config headers.
         let no_execute = if arch == Arch::Arm64 { 9 } else { 12 };
-        let mut events = Box::new(Events { stop: None, memory: &*memory, no_execute });
+        let mut events = Box::new(Events { stop: None, accesses: Vec::new(), memory: &*memory, no_execute });
         let raw = new_jit(arch, &mut memory, &mut events, code_cache, precise_faults)?;
         let interrupt = crate::Interrupt::default();
         set_halt_target(&interrupt, raw);
@@ -315,6 +339,20 @@ impl Cpu for Dynarmic {
 
     fn require_precise_faults(&mut self) -> Result<(), Error> {
         self.set_precise_faults(true)
+    }
+
+    fn watch_memory(&mut self, start: u64, end: u64) -> Result<(), Error> {
+        self.memory.watch(start, end);
+        Ok(())
+    }
+
+    fn unwatch_memory(&mut self) {
+        self.memory.unwatch_all();
+        self.events.accesses.clear();
+    }
+
+    fn take_accesses(&mut self) -> Vec<crate::Access> {
+        std::mem::take(&mut self.events.accesses)
     }
 
     fn precise_faults(&self) -> bool {
