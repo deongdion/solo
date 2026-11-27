@@ -8,6 +8,7 @@
 //! A call into the guest returns through the trampoline page (`backend::TRAMPOLINE`).
 
 pub mod debug;
+mod device;
 pub mod gdb;
 pub mod hooks;
 mod host;
@@ -25,7 +26,7 @@ use linker::{Linker, Resolver};
 use machine::Perms;
 
 pub use debug::{DebugEvent, Debugger, Resume};
-pub use device::{Clock, ClockMode};
+pub use ::device::{Clock, ClockMode, Profile};
 pub use gdb::GdbStub;
 pub use hooks::{Call, Flow, Hook, HookId};
 pub use inspect::trace::{Executed, Trace, TraceConfig};
@@ -205,6 +206,8 @@ pub struct Emulator {
     pub(crate) accesses: Vec<tracing::MemoryAccess>,
     pub(crate) debug: debug::Debug,
     pub(crate) unpack: unpack::Unpack,
+    /// Device profile for `__system_property_get` and `/proc/cpuinfo` (PLAN.md F15).
+    pub(crate) profile: Option<std::sync::Arc<::device::Profile>>,
 }
 
 impl Emulator {
@@ -239,6 +242,7 @@ impl Emulator {
             accesses: Vec::new(),
             debug: debug::Debug::default(),
             unpack: unpack::Unpack::default(),
+            profile: None,
         };
         emulator.vm.clock = emulator.kernel.clock.clone();
         emulator.setup(&options.env)?;
@@ -281,6 +285,7 @@ impl Emulator {
             accesses: Vec::new(),
             debug: self.debug.clone(),
             unpack: self.unpack.clone(),
+            profile: self.profile.clone(),
         })
     }
 
@@ -308,6 +313,7 @@ impl Emulator {
         // The breakpoints are in the restored memory; this emulator's debugger stays.
         self.debug.breakpoints = template.debug.breakpoints.clone();
         self.unpack = template.unpack.clone();
+        self.profile = template.profile.clone();
         Ok(())
     }
 
