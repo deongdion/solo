@@ -79,6 +79,31 @@ fn libc_arm32() {
     check(Arch::Arm32);
 }
 
+/// A 64-bit integer result: `call` keeps only the low 32 bits on arm32, `call64` the whole pair.
+fn wide_return(arch: Arch) {
+    let Some(mut emu) = emulator(arch) else { return };
+    let libc = emu.load("libc.so").unwrap();
+    let malloc = emu.symbol(libc, "malloc").unwrap();
+    let buffer = emu.call(malloc, &[256]).unwrap();
+    put(&mut emu, buffer, "0x1122334455667788");
+    let strtoll = emu.symbol(libc, "strtoll").unwrap();
+    // strtoll(nptr, NULL, 0): returns a `long long`, in x0 on arm64 and r0:r1 on arm32.
+    let full = 0x1122_3344_5566_7788u64;
+    assert_eq!(emu.call64(strtoll, &[buffer, 0, 0]).unwrap(), full);
+    let low = emu.call(strtoll, &[buffer, 0, 0]).unwrap();
+    assert_eq!(low, if arch == Arch::Arm64 { full } else { full & 0xffff_ffff });
+}
+
+#[test]
+fn wide_return_arm64() {
+    wide_return(Arch::Arm64);
+}
+
+#[test]
+fn wide_return_arm32() {
+    wide_return(Arch::Arm32);
+}
+
 fn crash_has_backtrace(arch: Arch) -> Option<runtime::Crash> {
     let dir = sdk(arch)?;
     let mut options = Options::new(arch);

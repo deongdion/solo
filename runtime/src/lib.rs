@@ -508,11 +508,26 @@ impl Emulator {
         Ok((module, version))
     }
 
-    /// Calls a guest function and returns its first result register.
+    /// Calls a guest function and returns its first result register, 32-bit on arm32. A function
+    /// that returns a 64-bit value (a `jlong`, a `double`'s bits, or a pointer on a 64-bit build)
+    /// is truncated to 32 bits on arm32, where the value is in the r0:r1 pair — use [`call64`] for
+    /// that, or [`call_slots`] for a float/double or the full register set.
+    ///
+    /// [`call64`]: Self::call64
+    /// [`call_slots`]: Self::call_slots
     pub fn call(&mut self, function: u64, args: &[u64]) -> Result<u64, Error> {
         let slots: Vec<javavm::args::Slot> = args.iter().map(|&a| javavm::args::Slot::Word(a)).collect();
         let returned = self.call_slots(function, &slots)?;
         Ok(if self.arch() == Arch::Arm64 { returned.r0 } else { returned.r0 & 0xffff_ffff })
+    }
+
+    /// Calls a guest function and returns its full 64-bit integer result: `x0` on arm64, the
+    /// `r0:r1` pair on arm32. For a function returning a `jlong` or a 64-bit pointer, where
+    /// [`call`](Self::call) would drop the high half on arm32.
+    pub fn call64(&mut self, function: u64, args: &[u64]) -> Result<u64, Error> {
+        let slots: Vec<javavm::args::Slot> = args.iter().map(|&a| javavm::args::Slot::Word(a)).collect();
+        let r = self.call_slots(function, &slots)?;
+        Ok(if self.arch() == Arch::Arm64 { r.r0 } else { (r.r0 & 0xffff_ffff) | (r.r1 & 0xffff_ffff) << 32 })
     }
 
     /// Calls a guest function with typed arguments laid out per the platform ABI (FP registers
