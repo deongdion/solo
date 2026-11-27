@@ -26,6 +26,10 @@ fn emulator(arch: Arch) -> Option<Emulator> {
     options.library_dirs = vec![sdk];
     options.kernel.echo_output = false;
     options.budget = 2_000_000_000;
+    // A fixed clock and seed, so a run that mixes time, randomness and threads is reproducible
+    // (PLAN.md F18/F19); `determinism` below checks two fresh emulators run identically.
+    options.kernel.clock = runtime::ClockMode::Fixed { start_ns: 1_700_000_000_000_000_000, step_ns: 1000 };
+    options.kernel.random_seed = Some(1);
     let mut emu = Emulator::new(options).unwrap();
     let module = emu.load(fixture.to_str().unwrap()).unwrap();
     emu.call_jni_onload(module).unwrap();
@@ -60,4 +64,27 @@ fn threads_arm64() {
 #[test]
 fn threads_arm32() {
     run(Arch::Arm32);
+}
+
+/// A workload mixing threads, a futex, time and randomness runs identically twice (PLAN.md
+/// F18/F19): same output, same thread interleaving, and the same number of instructions executed.
+fn determinism(arch: Arch) {
+    let once = || {
+        let mut emu = emulator(arch)?;
+        let out = threads(&mut emu, 4, 500, 7).unwrap();
+        Some((out, emu.kernel.threads.switches, emu.cpu.executed()))
+    };
+    let Some(first) = once() else { return };
+    let second = once().unwrap();
+    assert_eq!(first, second, "run was not reproducible ({arch:?})");
+}
+
+#[test]
+fn determinism_arm64() {
+    determinism(Arch::Arm64);
+}
+
+#[test]
+fn determinism_arm32() {
+    determinism(Arch::Arm32);
 }

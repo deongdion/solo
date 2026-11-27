@@ -234,7 +234,9 @@ Next: 24 h RSS soak result.
 
 - Failed-lookup report, JNI members (F16): `GetMethodID`/`GetFieldID` that find nothing already raise `NoSuchMethodError`/`NoSuchFieldError`, but a native that swallows the exception leaves no trace; the summary now also lists each missing lookup as `class->name sig` with a count (`Summary::missing_members`, from `Vm::missing_members`, carried by `fork`). With this, F16 covers unresolved symbols, unhandled syscalls, unhandled JNI calls, missing libraries, missing files, unset properties and missing JNI members.
 
-Next: deterministic threads check (F18), device trace diff (F17).
+- Determinism (F18): a workload mixing pthreads, a futex, the clock and randomness runs identically across two fresh emulators — same output, same thread interleaving (`threads.switches`) and the same instruction count (`cpu.executed()`) — with a fixed clock and random seed, on both backends (`runtime/tests/threads.rs::determinism`). An exploratory agent had already observed this held; the test locks it in. The scheduler is deterministic by construction (fixed instruction slices, no host-time input); the clock and RNG are the only other nondeterminism and both are injectable (F19).
+
+Next: device trace diff (F17).
 
 ## Build
 
