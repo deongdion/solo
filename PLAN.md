@@ -69,6 +69,7 @@ Porting unidbg code (Apache-2.0) requires keeping its NOTICE and marking changed
 | F8 | Multi-stage loaders (one module loading another via dlopen) are hard to follow | Module timeline: load, init_array, JNI_OnLoad, RegisterNatives, dlsym, with the requesting module and caller address | linker, javavm, inspect | M2 |
 | F9 | On Windows, java.exe broke CJK paths (JVM argument encoding, not unidbg) | Host paths stay `OsStr`/`Path` end to end; CI test from a Korean path on Windows | all | M1 |
 | F11 | Native code reads input `HashMap`s through `keySet()`, `iterator()`, `next()`, `get()`, `size()`, `containsKey()`, `toArray()`; users re-implement the Map/Set/Iterator/Map.Entry protocol by hand. In unidbg's proxy layer the method is looked up on the object's runtime class; for `HashMap$KeySet` and similar private classes the reflective call throws `IllegalAccessException` (measured on JDK 21 outside unidbg; that this is the unidbg failure path is a hypothesis) | Built-in marshaling for `Map`, `HashMap`, `Set`, `List`, `Iterator`, `Map$Entry`, boxed primitives: resolve methods by the interface named in `GetMethodID`, not by the runtime class | java, javavm | M2 |
+| F13 | An armv7 library without data relocations has no DT_RELENT (lld omits it); unidbg then reads `.rel.plt` with a 12-byte stride and leaves the PLT unbound (reproduced: `bench/parity/libparityplt.so`, `mem_read address=0x14cc`) | Entry size from DT_PLTREL (REL 8/16, RELA 12/24), never a guessed default | linker | M1 (done) |
 | F12 | `fstatat(fd, NULL, buf, AT_EMPTY_PATH)` (stat the fd itself) crashes unidbg: both handlers call `pathname.getString(0)` before any check (NPE on null), and a dirfd other than `AT_FDCWD` with an empty or relative path throws `BackendException` (checked in `ARM64SyscallHandler.fstatat64` and `ARM32SyscallHandler.fstatat64` at upstream 30911d7) | All `*at` syscalls share one path resolver: null or empty path with `AT_EMPTY_PATH` resolves to the fd itself; relative paths resolve against the dirfd; errors become errno, never a host exception. Covered by fixtures | kernel | M1 |
 | F10 | Signing orchestration (which cmd/args reach `doCommandNative`) lives in a plugin dex that is only decrypted in memory at run time; unidbg cannot run it, so the commands must be guessed or the dex read by hand | Load a dex from memory (like `InMemoryDexClassLoader`) and run its bytecode in the VM, calling into native through the same JNI layer. **Exception to the scope rule: unidbg has no dex loading or bytecode execution (checked in its source).** Needs a Dalvik interpreter on top of the redex `engine` dex parser | javavm, java, redex engine | M6 (after merge) |
 
@@ -144,7 +145,9 @@ Precise fault PCs: dynarmic stops at a faulting data access only with `check_hal
 
 So it is an option (`Options::precise_faults`, backendbench `dynarmic_precise`), off by default; the crash report says when the PC is only the block start. Fetch faults are always exact.
 
-Next: byte-equal comparison with unidbg on fixtures.
+Parity with unidbg (`bench/parity`, `runtime/tests/parity.rs`): the fixture's output is byte-equal to unidbg's on arm64 and armv7, for all three dynamic-section variants. unidbg itself agrees across unicorn2 and dynarmic and both architectures. Found on the way: unidbg cannot bind the armv7 PLT of a library without DT_RELENT (12-byte default stride for 32-bit REL entries); recorded in bench/parity/README.md as an improvement to the existing loader.
+
+Next: JNI layer (M2).
 
 ## Build
 

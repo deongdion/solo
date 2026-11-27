@@ -1,0 +1,34 @@
+int: -42 42 4000000000 beef BEEF 10
+width: [   42] [42   ] [00042] [+42] [ 42]
+long: -1 2147483648 -9000000000 18000000000 123456789abc
+short char: -2 250 Q %
+string: [abc] [       abc] [abc       ] [abc]
+float: 3.141593 2.50    -0.3333 1.234568e+04 1.230000E-04 1e-05 1E+20
+float special: 0.3 0.142857 0x1p+0
+snprintf: 17 [truncate-12345-]
+strlen 12 strcmp 1 1 strncmp 0
+strstr [world] strchr [o, world] strrchr [orld]
+upper [HELLO, WORLD] memcmp 1
+memmove [0101234589]
+memset [xxx1234589]
+strtol -12345 rest [xyz]
+strtol hex 31 oct 511 base36 1295
+strtoul 4294967295 atoi 2147483647
+strtod 6.02214076e+23 0.10000000000000001
+sscanf 3 12 [abc] 16
+isdigit 1 0
+qsort -100 -3 0 7 7 9 15 42
+bsearch index 6
+rand 1804289383 846930886 1681692777
+gmtime 2023-11-14 22:13:20 Tue 318 yday 317 wday 2
+timegm 1700000000
+open -1 errno 2 [No such file or directory]
+strerror 13 [Permission denied]
+getenv ANDROID_ROOT [/system] missing 1
+calloc zero 1 realloc kept sum 1240
+malloc distinct 1
+dlopen libm 1 dlsym cos 1
+cos(1) 0.54030230586813977
+dlsym missing 1 dlerror set 1
+done
+return 1068
