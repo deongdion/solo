@@ -403,8 +403,19 @@ impl Kernel {
                 self.after_switch(switch);
                 ok(0)
             }
+            Sys::ArmCacheflush => {
+                // cacheflush(start, end, flags): the guest wrote code (a packer decrypting itself,
+                // a trampoline). dynarmic keeps a translation cache that only `protect`/`unmap`
+                // invalidate, so without this a rewritten-then-rerun address runs its stale
+                // translation; unicorn re-translates on its own. Invalidate the flushed range.
+                let (start, end) = (a[0], a[1]);
+                if end > start {
+                    cpu.invalidate(start, end - start);
+                }
+                ok(0)
+            }
             Sys::SetRobustList | Sys::SchedYield | Sys::Setpriority | Sys::Msync
-            | Sys::Fsync | Sys::ArmCacheflush | Sys::Setrlimit => ok(0),
+            | Sys::Fsync | Sys::Setrlimit => ok(0),
             Sys::Getpriority => ok(20),
             Sys::Umask => ok(0o022),
             Sys::Madvise => ok(0),

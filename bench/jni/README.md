@@ -113,3 +113,10 @@ with 32-byte `stp q` stores) and clears the ELF magic in memory; the exported `u
 differs from `libpacked_plain.so` in 70 bytes (the cleared magic and the 66 bytes `unlock()`
 decrypted); with dynarmic the load fails with `UnsupportedOperationException`. The runtime's dump
 (`runtime/tests/unpack.rs`) equals `libpacked_plain.so`.
+
+## Self-modifying code (PLAN.md M4)
+
+`libsmc.so` is `smc.c`: `patch` writes a function returning 111 into an RWX buffer, runs it,
+rewrites it to return 222, flushes the instruction cache (arm64 `IC IVAU`, arm32 the
+`__ARM_NR_cacheflush` syscall), and runs it again. `runtime/tests/smc.rs` asserts the result is
+111 then 222 on both backends; before the dynarmic cache-invalidation fix it returned 111 twice.

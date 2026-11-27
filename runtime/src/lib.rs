@@ -422,9 +422,44 @@ impl Emulator {
         Ok(())
     }
 
-    /// Address of an exported symbol in a loaded module.
+    /// Address of a symbol in a loaded module: a dynamic export, or, failing that, a `.symtab`
+    /// local function or object (packed libraries often export almost nothing but keep a symtab).
     pub fn symbol(&self, module: usize, name: &str) -> Option<u64> {
-        self.linker.modules[module].symbol(name)
+        let m = &self.linker.modules[module];
+        m.symbol(name).or_else(|| m.static_symbol(name))
+    }
+
+    /// Address of a `.symtab` local symbol only (never a dynamic export).
+    pub fn local_symbol(&self, module: usize, name: &str) -> Option<u64> {
+        self.linker.modules[module].static_symbol(name)
+    }
+
+    /// Runtime address of a link-time offset in a module, for calling a function found by a tool
+    /// at a file offset (unidbg's `callFunction(offset)`): `emu.call(emu.module_address(m, off), ..)`.
+    pub fn module_address(&self, module: usize, offset: u64) -> u64 {
+        self.linker.modules[module].bias.wrapping_add(offset)
+    }
+
+    /// Every native bound by `RegisterNatives`: (class, "name+descriptor", guest address). The
+    /// structured form of the JNI timeline, for finding an entry point to call in an unknown library.
+    pub fn registered_natives(&self) -> Vec<(String, String, u64)> {
+        let mut out: Vec<(String, String, u64)> = Vec::new();
+        for event in &self.vm.events {
+            if let javavm::JniEvent::RegisterNatives { class, methods, .. } = event {
+                for (name, desc, address) in methods {
+                    out.push((class.clone(), format!("{name}{desc}"), *address));
+                }
+            }
+        }
+        out
+    }
+
+    /// Loads a library, runs its init functions, then calls `JNI_OnLoad` if it exports one.
+    /// Returns the module and the version `JNI_OnLoad` reported (None if there is no `JNI_OnLoad`).
+    pub fn load_and_init(&mut self, name: &str) -> Result<(usize, Option<u32>), Error> {
+        let module = self.load(name)?;
+        let version = self.call_jni_onload(module)?;
+        Ok((module, version))
     }
 
     /// Calls a guest function and returns its first result register.

@@ -150,6 +150,16 @@ struct Callbacks64 final : Dynarmic::A64::UserCallbacks, Common<uint64_t> {
         cpu->SetPC(pc);
         exception(pc, static_cast<uint32_t>(e));
     }
+    // Self-modifying code: bionic's __clear_cache ends in IC IVAU over each line (there is no
+    // syscall on arm64). dynarmic keeps a translation cache, so without acting on this a
+    // rewritten-then-rerun address would run its stale translation. Invalidate the affected code.
+    void InstructionCacheOperationRaised(Dynarmic::A64::InstructionCacheOperation op, V value) override {
+        if (op == Dynarmic::A64::InstructionCacheOperation::InvalidateByVAToPoU) {
+            cpu->InvalidateCacheRange(value & ~static_cast<uint64_t>(63), 64);
+        } else {
+            cpu->ClearCache();
+        }
+    }
     void AddTicks(uint64_t ticks) override { add_ticks(ticks); }
     uint64_t GetTicksRemaining() override { return budget; }
     uint64_t GetCNTPCT() override { return executed; }

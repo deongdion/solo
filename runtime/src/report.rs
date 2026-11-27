@@ -256,7 +256,7 @@ impl fmt::Display for Summary {
         }
         writeln!(f, "unresolved symbols: {}", self.unresolved_symbols.len())?;
         for (module, symbol, calls) in &self.unresolved_symbols {
-            writeln!(f, "  {module}: {symbol} (called {calls}x)")?;
+            writeln!(f, "  {module}: {symbol} (called {calls} times)")?;
         }
         if !self.linker_warnings.is_empty() {
             writeln!(f, "linker warnings: {}", self.linker_warnings.len())?;

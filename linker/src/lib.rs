@@ -118,7 +118,9 @@ impl Module {
         arm.then_some(false)
     }
 
-    /// Nearest dynamic or `.symtab` symbol at or below `address`.
+    /// Nearest dynamic or `.symtab` symbol at or below `address`. A dynamic symbol whose size is
+    /// known is skipped once `address` is past its end, so a caller deep inside a packed library
+    /// is not misattributed to a distant export (the nearest one could be hundreds of KiB below).
     pub fn closest_symbol(&self, address: u64) -> Option<(String, u64)> {
         let mut best: Option<(u64, u32)> = None;
         for i in 0..self.symbols.len() {
@@ -127,7 +129,7 @@ impl Module {
                 continue;
             }
             let at = self.bias.wrapping_add(s.value & if self.symbols.is64 { !0 } else { !1 });
-            if at <= address && best.is_none_or(|(b, _)| at > b) {
+            if at <= address && (s.size == 0 || address < at + s.size) && best.is_none_or(|(b, _)| at > b) {
                 best = Some((at, s.name));
             }
         }

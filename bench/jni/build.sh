@@ -35,3 +35,12 @@ packed() {
 }
 packed arm64 aarch64-linux-android23
 packed arm32 armv7a-linux-androideabi23 -mthumb
+
+# libsmc.so: self-modifying code fixture (no libc; only compiler builtins).
+smc() {
+    local out=$1 target=$2; shift 2
+    "$LLVM/clang" --target="$target" -O2 -fPIC -shared -nostdlib -fuse-ld=lld -fno-stack-protector \
+        "$@" smc.c -Wl,-soname,libsmc.so -Wl,--no-undefined -o "$out/libsmc.so"
+}
+smc arm64 aarch64-linux-android23
+smc arm32 armv7a-linux-androideabi23 -mthumb
