@@ -199,9 +199,7 @@ Note: absolute latencies in this session are about 1.8x the M0 table's (the pre-
 
 - Crash reports and JNI error locations name static functions from the file's `.symtab` (when not stripped) as well as dynamic symbols (`runtime/tests/signals.rs` names_static_functions); they report the PC as exact when the CPU currently has precise faults, including after a handler switched them on.
 - `runtime/tests/tmessages.rs` now asserts that JNI_OnLoad of libtmessages returns 0x10006 with nothing unhandled on the built-in models alone, on both backends (was a manual probe).
-- Soak: `tmbench <arch> dynarmic soak <workers> <seconds>` (two never-recycled pool workers, one instance restored from the template every 1000 calls, every result checked, one line a minute). The 24 h arm64 run started 2026-11-27 19:53 +09:00; results go here when it ends.
-
-Next: 24 h RSS soak result.
+- Soak: `tmbench <arch> dynarmic soak <workers> <seconds>` (two never-recycled pool workers, one instance restored from the template every 1000 calls, every result checked, one line a minute). The 24 h arm64 run (started 2026-11-27 19:53 +09:00, ended 2026-11-28) completed clean: **10,540,521,325 jobs** over 86,400 s (~122k jobs/s average, ~129k steady after warm-up), **0 failed, 0 timeouts, 0 panics, 0 mismatches** across all 1,440 one-minute samples; every restored instance's AES and PBKDF2 output matched the template's (`aes=d5e581b4…`, `pbkdf2_100=90c16981…`) on every check. **2,001,913 template restores** (fork/restore exercised ~2 M times) with only 2 cold builds. Memory bounded over the full day with no upward drift: working set 256–326 MB (steady ~324 MB, oscillating with GC), worker guest memory flat at 15.2 MB, live Java objects cycling 100–4,075 between collections. Confirms the pool, save/restore and GC hold under sustained load.
 
 ### M4 progress
 
@@ -244,7 +242,7 @@ Next: 24 h RSS soak result.
 
 - Harness template (wishlist item 4, `runtime/examples/harness.rs`): the signature/attestation-SDK call pattern end to end — load the library, install the device profile (F15) and a fixed clock and seed (F18/F19), run `JNI_OnLoad`, dump `registered_natives()` to find the dispatcher, set up the Java-side state the native reads, implement the Java callbacks it makes (one `Jni` handler arm each, including a constructor and a thrown exception), call it by class/name/descriptor with `call_static`, read the token and print the summary of missing stubs (F16). A template, not engine code: the header says the four things to change for your own `doCommandNative`/`sign`/`getToken`, and nothing per-site is added to the engine (the existing `call_static`/`call_method` already resolve a RegisterNatives binding, inject `JNIEnv`/`jclass`, marshal objects and 64-bit returns, and manage ref frames and exceptions). Runs to a clean token on both architectures against `bench/jni/libjnifix.so`.
 
-Next: wishlist (F15-F19) complete, plus the harness template. Remaining lower-priority polish: per-thread stacks in `/proc/self/maps` (kernel-version dependent, not a tell for the 6.0 profile). Then M3 soak results, M5 (redex merge), M6 (F10).
+Next: wishlist (F15-F19) complete, plus the harness template; M3's 24 h soak is done and clean (see M3 progress). Remaining lower-priority polish: per-thread stacks in `/proc/self/maps` (kernel-version dependent, not a tell for the 6.0 profile). Then M5 (redex merge), M6 (F10).
 
 ## Build
 
